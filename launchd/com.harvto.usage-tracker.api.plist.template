@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.harvto.usage-tracker.api</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>[ -f __REPO__/.env ] &amp;&amp; source __REPO__/.env; exec __UVICORN__ src.api:app --host 127.0.0.1 --port 8000</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.usage-tracker/logs/api.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.usage-tracker/logs/api.err.log</string>
+</dict>
+</plist>

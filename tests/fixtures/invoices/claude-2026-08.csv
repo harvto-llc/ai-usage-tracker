@@ -1,0 +1,4 @@
+service_provider_name,service_name,charge_category,charge_period_start,charge_period_end,billing_currency,billed_cost,effective_cost,x_model,consumed_quantity,consumed_unit
+claude,Claude Max,Purchase,2026-08-01,2026-09-01,USD,100.00,100.00,,1,seat-month
+claude,Claude Max,Tax,2026-08-01,2026-09-01,USD,0.00,0.00,,,
+claude,Claude Max,Usage,2026-08-01,2026-09-01,USD,,,claude-opus-4-8,,

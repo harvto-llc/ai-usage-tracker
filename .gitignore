@@ -1,0 +1,12 @@
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+*.pyc
+.pytest_cache/
+UsageMenuBar/.build/
+UsageMenuBar/*.app/
+dist/
+.DS_Store

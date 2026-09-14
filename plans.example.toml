@@ -1,0 +1,65 @@
+# plans.example.toml — Copy to ~/.usage-tracker/plans.toml and adjust values.
+#
+# Plan names and costs are fallbacks. Live provider entitlements determine
+# the current quota buckets, model-specific limits, and credit balances.
+# Historical samples retain the plan observed when they were collected.
+
+[claude]
+plan = "Max 5x"          # Free, Pro, Max 5x, Max 20x, Team, Enterprise, API
+cost_usd_month = 100
+
+# ── Self-imposed quota (API-based access) ─────────────────────────────
+# For Bedrock, Vertex, enterprise, or API-key access there is no
+# subscription quota page to scrape, so the session/weekly gauges stay
+# empty. Uncomment [claude.self_quota] to compute them locally against
+# caps you set yourself — by tokens or by cost. Token counts include
+# input + output + cache. Scraped subscription quota always wins when
+# it's live; self-quota kicks in when scraping is off
+# (collector --access api) or stale.
+#
+# [claude.self_quota]
+# window_hours = 5                    # rolling "session" window
+# weekly_days = 7                     # rolling "weekly" window
+# session_cap_tokens = 44_000_000
+# weekly_cap_tokens = 300_000_000
+# --- or cost-based caps (uses the API pricing table below): ---
+# session_cap_usd = 35.0
+# weekly_cap_usd = 250.0
+#
+# Per-model pricing overrides for cost-based caps (USD per Mtok; defaults
+# live in src/plan_config.py MODEL_COSTS, longest prefix wins):
+# [claude.self_quota.pricing."claude-fable-5"]
+# input = 10.0
+# output = 50.0
+# cache_read = 1.0
+# cache_write = 12.5
+
+[codex]
+plan = "Pro 20x"         # Free, Go, Plus, Pro 5x, Pro 20x, Business, Enterprise, API
+cost_usd_month = 200
+
+# Self-imposed quota for API-based Codex access.
+# Same semantics as [claude.self_quota]; usage measured from
+# ~/.codex/sessions JSONL. Cached input is a subset of input and is charged
+# once at the discounted cached-input rate.
+#
+# [codex.self_quota]
+# window_hours = 5
+# weekly_days = 7
+# session_cap_tokens = 8_000_000
+# weekly_cap_tokens = 60_000_000
+# --- or cost-based: ---
+# session_cap_usd = 10.0
+# weekly_cap_usd = 75.0
+#
+# [codex.self_quota.pricing."gpt-5.6-sol"]
+# input = 5.0
+# output = 30.0
+# cache_read = 0.5
+# cache_write = 5.0
+
+[cursor]
+plan = "Free"
+cost_usd_month = 0
+# Cursor self-quota is intentionally skipped; its limits come from the
+# scraped subscription dashboard.
