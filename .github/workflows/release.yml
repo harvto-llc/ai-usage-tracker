@@ -186,7 +186,8 @@ jobs:
           if [ "dist/ai-cur-desktop-$VERSION.dmg" != "dist/$name" ]; then
             mv "dist/ai-cur-desktop-$VERSION.dmg" "dist/$name"
           fi
-          shasum -a 256 "dist/$name" | tee "dist/$name.sha256"
+          # Bare file name inside, so `shasum -c` works next to the downloaded file.
+          (cd dist && shasum -a 256 "$name" | tee "$name.sha256")
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
