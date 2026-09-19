@@ -97,6 +97,11 @@ function Assert-AllGone([string]$How) {
     Write-Host "${How}: tray, supervisor, api and collector all gone"
 }
 
+# PowerShell names are case-insensitive: $tray and $Tray are ONE variable. The tray process is
+# $trayProc so it can never overwrite the exe path in $Tray (CI run 35425372263 did exactly that).
+# Any error not already turned into a Fail still goes through Fail, and so through its cleanup.
+trap { Fail 2 "unexpected error: $_" }
+
 $script:RealProfile = $env:USERPROFILE
 $script:RealHome = $env:HOME
 $script:ProfileDir = $null
@@ -128,7 +133,7 @@ Set-Content -Path (Join-Path $sessions "smoke-dummy.json") -Encoding ascii `
     -Value ('{"sessionId": "smoke-dummy", "pid": ' + $script:Dummy.Id + ', "cwd": "C:\\"}')
 Write-Host "planted dummy Claude session pid $($script:Dummy.Id)"
 
-$tray = Start-Tray
+$trayProc = Start-Tray
 if (-not (Wait-Health)) { Fail 3 "GET 127.0.0.1:$Port/health did not answer within ${Timeout}s (no backend)" }
 Write-Host "health answered"
 
@@ -184,9 +189,9 @@ if ($q.ExitCode -ne 0) { Fail 5 "aicur-tray --quit exited $($q.ExitCode) (no run
 Assert-AllGone "quit (--quit)"
 
 # ---- force quit ----
-$tray = Start-Tray
+$trayProc = Start-Tray
 if (-not (Wait-Health)) { Fail 3 "relaunch: /health did not answer within ${Timeout}s" }
-Stop-Process -Id $tray.Id -Force
+Stop-Process -Id $trayProc.Id -Force
 Assert-AllGone "force quit (Stop-Process -Force)"
 
 # ---- uninstall ----
