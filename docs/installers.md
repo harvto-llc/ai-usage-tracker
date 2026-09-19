@@ -7,6 +7,36 @@ Single source for the installer work on branch `feat/installers` (cut from `orig
 Nothing here is pushed, tagged or released by the agent. The supervisor pushes after the
 founder's OK.
 
+## Handover (2026-09-19, loop session at context threshold)
+
+State:
+- V1 to V4 are accepted by Oss and the supervisor. The supervisor's terminal ACCEPT for V3, V4
+  and the CI fixes is at `d572df9`. CI run `35425765321` at that SHA is green on macOS, Windows
+  and Linux, and every negative control exits 3 first.
+- Committed but not yet verdicted: `db82da2`..`7586f71`. These are the macOS process-tree
+  check, the `gate` job, Windows StrictMode, the run-3 docs and Oss's hardening notes. The
+  supervisor pushes them in the next batch as CI run 4. The watcher looks for head
+  `7586f71a54927f38e276852e8d838825e9469f1c`.
+- The tree is clean and nothing is uncommitted. The agent never pushes; the supervisor does.
+
+Next bounded action (assigned by the supervisor; not started):
+1. Read CI run 4 at `7586f71`. If a StrictMode line fails on Windows, fix that line; do not
+   drop StrictMode.
+2. Write `docs/release-checklist.md` so a person can follow it cold, with no secrets in the file:
+   - the five macOS secrets (`MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `NOTARY_APPLE_ID`,
+     `NOTARY_TEAM_ID`, `NOTARY_PASSWORD`) and how each is produced: export the Developer ID
+     Application certificate as .p12, base64 it, create an app-specific password for
+     notarytool
+   - the Windows inputs `WINDOWS_CERT_PFX` (base64 .pfx) and `WINDOWS_CERT_PASSWORD`
+   - how to cut a `v*` tag
+   - what to check in the draft release before publishing: the smoke logs,
+     `spctl -a -vv` and `xcrun stapler validate` on the dmg, `signtool verify /pa` on the exe
+   - how to yank a bad release
+   Then request a supervisor verdict by exact SHA.
+
+Open for the founder: the signing secrets, the first `v*` tag, a real `.deb` maintainer
+address, and whether to require the `gate` check on PRs.
+
 ## Deliverables
 
 | | What | State |
