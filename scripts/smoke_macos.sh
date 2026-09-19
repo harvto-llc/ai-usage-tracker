@@ -116,12 +116,41 @@ wait_health() {
   return 1
 }
 
-# Asserts every process started from the copied app is gone and the port is closed.
+# Finds the running tree by PARENTAGE, so no path spelling can hide a process:
+#   app (APP_PID) -> supervise -> { api, collector-loop }
+# collector-loop is long-lived; each cycle is a short collect-once child of it, which may or
+# may not exist at this instant and is therefore not required here. Sets TREE_PIDS.
+TREE_PIDS=""
+assert_process_tree() {
+  local when=$1 sup api col
+  ps -axo pid=,ppid=,args= > "$WORK/ps.txt"
+  sup=$(awk -v p="$APP_PID" '$2 == p && / supervise( |$)/ {print $1}' "$WORK/ps.txt")
+  api=$(awk -v p="${sup:-none}" '$2 == p && / api( |$)/ {print $1}' "$WORK/ps.txt")
+  col=$(awk -v p="${sup:-none}" '$2 == p && / collector-loop( |$)/ {print $1}' "$WORK/ps.txt")
+  printf '%s: app %s, supervisor %s, api %s, collector-loop %s\n' "$when" "$APP_PID" "${sup:--}" "${api:--}" "${col:--}"
+  awk -v a="$APP_PID" -v s="${sup:-none}" '$1 == a || $1 == s || $2 == s' "$WORK/ps.txt"
+  [ -n "$sup" ] || fail 2 "$when: the app (pid $APP_PID) has no 'supervise' child"
+  [ -n "$api" ] || fail 2 "$when: the supervisor (pid $sup) has no 'api' child"
+  [ -n "$col" ] || fail 2 "$when: the supervisor (pid $sup) has no 'collector-loop' child"
+  if [ -n "$LAUNCH_ARCH" ]; then
+    awk -v s="$sup" '$1 == s' "$WORK/ps.txt" | grep -q "/backend/$LAUNCH_ARCH/" \
+      || fail 2 "$when: LAUNCH_ARCH=$LAUNCH_ARCH but the supervisor is not backend/$LAUNCH_ARCH"
+  fi
+  TREE_PIDS="$APP_PID $sup $api $col"
+}
+
+# Asserts every process of the recorded tree, and anything else started from the copied app
+# (a collect-once mid-cycle included), is gone and the port is closed.
 assert_all_gone() {
-  local how=$1 deadline=$((SECONDS + QUIT_TIMEOUT)) left
-  while [ $SECONDS -lt $deadline ] && pgrep -f "$MARK" >/dev/null; do sleep 1; done
+  local how=$1 deadline=$((SECONDS + QUIT_TIMEOUT)) left pid
+  alive_any() {
+    for pid in $TREE_PIDS; do kill -0 "$pid" 2>/dev/null && return 0; done
+    pgrep -f "$MARK" >/dev/null
+  }
+  while [ $SECONDS -lt $deadline ] && alive_any; do sleep 1; done
   left=$(pgrep -f "$MARK" | tr '\n' ' ' || true)
-  [ -z "$left" ] || fail 5 "processes survived $how after ${QUIT_TIMEOUT}s: $left"
+  for pid in $TREE_PIDS; do kill -0 "$pid" 2>/dev/null && left="$left $pid"; done
+  [ -z "${left// /}" ] || fail 5 "processes survived $how after ${QUIT_TIMEOUT}s: $left"
   if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then fail 5 "port $PORT still listening after $how"; fi
   printf '%s: app, supervisor, api and collector all gone\n' "$how"
 }
@@ -151,14 +180,7 @@ done
 [ $HEALTH -eq 1 ] || fail 3 "GET 127.0.0.1:$PORT/health did not answer within ${TIMEOUT}s (no backend)"
 [ "${ROWS:-0}" -ge 1 ] || fail 4 "collector wrote no provider_metric_samples row within ${TIMEOUT}s"
 
-# Every process started from the copied app: the app, the supervisor, the API, the collector.
-BEFORE=$(pgrep -f "$MARK" | tr '\n' ' ' || true)
-printf 'processes from the app before quit: %s\n' "$BEFORE"
-[ "$(echo "$BEFORE" | wc -w)" -ge 4 ] || fail 2 "expected app + supervisor + api + collector, saw: $BEFORE"
-if [ -n "$LAUNCH_ARCH" ]; then
-  pgrep -fl "$MARK.*/backend/$LAUNCH_ARCH/" >/dev/null \
-    || fail 2 "LAUNCH_ARCH=$LAUNCH_ARCH but no backend/$LAUNCH_ARCH process is running"
-fi
+assert_process_tree "before quit"
 
 kill -TERM "$APP_PID"
 assert_all_gone "quit (SIGTERM)"
@@ -167,7 +189,7 @@ assert_all_gone "quit (SIGTERM)"
 # watch (and the children's own watch on the supervisor) can clean up.
 launch
 wait_health || fail 3 "relaunch: /health did not answer within ${TIMEOUT}s"
-[ "$(pgrep -f "$MARK" | wc -l)" -ge 4 ] || fail 2 "relaunch: backend processes missing"
+assert_process_tree "before force quit"
 kill -KILL "$APP_PID"
 assert_all_gone "force quit (SIGKILL)"
 APP_PID=""
