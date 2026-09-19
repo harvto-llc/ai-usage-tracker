@@ -20,8 +20,10 @@ State:
 - The tree is clean and nothing is uncommitted. The agent never pushes; the supervisor does.
 
 Next bounded action (assigned by the supervisor; not started):
-1. Read CI run 4 at `7586f71`. If a StrictMode line fails on Windows, fix that line; do not
-   drop StrictMode.
+1. DONE: CI run 4 (`35426135184`) at `7586f71` is green: macos, windows, linux and gate all
+   success. The Windows smoke passed under StrictMode. The macOS tree check printed app,
+   supervisor, api and collector-loop by PID for arm64 and for x86_64. Every negative control
+   exited 3.
 2. Write `docs/release-checklist.md` so a person can follow it cold, with no secrets in the file:
    - the five macOS secrets (`MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `NOTARY_APPLE_ID`,
      `NOTARY_TEAM_ID`, `NOTARY_PASSWORD`) and how each is produced: export the Developer ID
