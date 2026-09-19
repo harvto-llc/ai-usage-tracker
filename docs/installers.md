@@ -147,7 +147,7 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
 | Claim | Proven here (how) | Waits for CI |
 |-------|-------------------|--------------|
 | Backend freezes with PyInstaller one-dir, arm64 | `build_backend.py` locally: 28 MB, `Mach-O 64-bit executable arm64`, `.mjs` + pricing catalog inside `_internal/` | x86_64 build under Rosetta |
-| Supervisor starts API + collector, restarts, stops | 13 unit tests (`tests/test_aicur_backend.py`); frozen supervisor run by hand: rows written, clean exit on SIGTERM | |
+| Supervisor starts API + collector, restarts, stops | 17 unit tests (`tests/test_aicur_backend.py`); frozen supervisor run by hand: rows written, clean exit on SIGTERM | |
 | Config generation 0600 / reuse / tighten | 10 unit tests (`tests/test_aicur_config.py`) | |
 | Env overrides redirect; defaults unchanged | `tests/test_install_overrides.py` in fresh interpreters | |
 | `make_dmg.sh` argument checks (NOTARY_PROFILE + ad hoc fails first) | 11 tests (`tests/test_make_dmg_args.py`) | |
@@ -158,8 +158,8 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
 | SIGTERM reaches applicationWillTerminate | no (stand-in is a shell script) | smoke SIGTERM phase against the Swift app |
 | Workflow is valid | `actionlint` 1.7.12 with shellcheck 0.11.0: clean | everything it runs |
 | Signing / notarization path | no identity here | only when the secrets exist |
-| Tray core: config, /stats probe, summary, menu, backend start/stop | 26 unit tests (`tests/test_tray_core.py`); `windows_tray.py --check` against a live local API printed the real summary | |
-| Windows tray neutral helpers: Run key, menu ids/flags, v4 word decoding | 10 unit tests (`tests/test_windows_tray.py`, fake winreg) | same tests on `windows-latest` |
+| Tray core: config, /stats probe, summary, menu, backend start/stop | 29 unit tests (`tests/test_tray_core.py`); `windows_tray.py --check` against a live local API printed the real summary | |
+| Windows tray neutral helpers: Run key, menu ids/flags, v4 word decoding | 7 unit tests (`tests/test_windows_tray.py`, fake winreg) | same tests on `windows-latest` |
 | Win32 tray (window, icon, menu, --quit) | nothing: no Windows host here | smoke `--quit` and force-kill phases |
 | Inno Setup script compiles; per-user install, shortcut, Run key, clean uninstall | nothing | `smoke_windows.ps1` on `windows-latest` |
 | `smoke_windows.ps1` parses | no `pwsh` here | parse step runs first in the job |
