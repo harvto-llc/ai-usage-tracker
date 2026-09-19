@@ -76,7 +76,15 @@ def tray_args(dist: Path, work: Path) -> list[str]:
     ]
 
 
+MIN_PYTHON = (3, 11)  # src/plan_config.py imports tomllib
+
+
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < MIN_PYTHON:
+        # Otherwise the freeze succeeds and the API dies at import on the user's machine.
+        print(f"build_backend: Python {'.'.join(map(str, MIN_PYTHON))}+ required, "
+              f"this is {sys.version.split()[0]}", file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dist", type=Path, default=ROOT / "dist" / "backend")
     parser.add_argument("--work", type=Path, default=ROOT / "build" / "backend")
