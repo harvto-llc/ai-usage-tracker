@@ -9,7 +9,11 @@ from pathlib import Path
 
 from src import install_identity
 
-DB = Path(__file__).resolve().parent.parent / "claude_usage.db"
+# USAGE_TRACKER_DB lets a packaged install keep the database outside its read-only bundle.
+DB = Path(
+    os.environ.get("USAGE_TRACKER_DB")
+    or Path(__file__).resolve().parent.parent / "claude_usage.db"
+)
 
 # Turso / LibSQL configuration (optional remote sync)
 TURSO_URL = os.environ.get("TURSO_DATABASE_URL")

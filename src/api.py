@@ -685,6 +685,9 @@ def _sentinel_cookie_valid(provider: str, cookie_header: str) -> bool:
 
 
 def _sentinel_env_file() -> Path:
+    override = os.environ.get("USAGE_TRACKER_ENV_FILE")
+    if override:
+        return Path(override)
     return Path(__file__).resolve().parent.parent / ".env"
 
 
