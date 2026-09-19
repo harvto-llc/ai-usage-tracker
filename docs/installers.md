@@ -11,9 +11,9 @@ founder's OK.
 
 | | What | State |
 |-|------|-------|
-| V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | Oss PASS + supervisor ACCEPT at `b04d453`; waits for first CI run |
-| V2 | Windows tray + Inno Setup per-user installer, CI smoke | FAILED review at `2c760a9`, fixed; Oss PASS + supervisor ACCEPT at `536acab`; nothing Windows-native has run yet |
-| V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | Oss PASS at `8211f3e`; CI run 2 `linux` job green (negative control, `.deb` smoke, AppImage smoke) |
+| V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | Oss PASS + supervisor ACCEPT at `b04d453`; **proven in CI** (run 3 `35425765321` at `d572df9`) |
+| V2 | Windows tray + Inno Setup per-user installer, CI smoke | FAILED review at `2c760a9`, fixed; Oss PASS + supervisor ACCEPT at `536acab`; **proven in CI** (run 3 `35425765321` at `d572df9`) |
+| V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | Oss PASS at `8211f3e`; **proven in CI** (run 2 and run 3 `35425765321` at `d572df9`) |
 | V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | Oss PASS at `8211f3e` |
 
 ## Facts this plan rests on (measured 2026-09-18/19; code cites are to `a1d01a9`)
@@ -187,6 +187,15 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
   to `dist/homebrew/ai-cur-desktop.rb`. It points at `ai-cur-desktop-<version>.dmg`, the signed
   name; an `-unsigned` CI artifact is not meant for the cask.
 
+### CI run 3 (`35425765321`, at `d572df9`): all three platforms green
+
+macos, windows and linux all succeeded; release skipped (not a tag). Every negative control
+failed with exactly exit 3 first. The macOS smoke counted 4 processes once it matched on the
+work-dir name, which confirms the path-spelling cause of run 2's "3 of 4" (not an exited
+collector: collector-loop is long-lived). Commits after `d572df9` (structural process-tree
+check on macOS, the `gate` job, Windows strict mode) are instrument hardening and need their
+own green run.
+
 ### CI run 2 (`35425372263`, at `8211f3e`)
 
 - linux: success. The stub-backend `.deb` failed the smoke with exit 3 as required, then the
@@ -273,27 +282,34 @@ Sweep for the same class (grep over `src/`, `clients/`, `packaging/`, `scripts/`
 
 ## Proven here vs waits for CI
 
-| Claim | Proven here (how) | Waits for CI |
+| Claim | Proven here (how) | Proven in CI (run 3 `35425765321` at `d572df9`, unless noted) |
 |-------|-------------------|--------------|
-| Backend freezes with PyInstaller one-dir, arm64 | `build_backend.py` locally: 28 MB, `Mach-O 64-bit executable arm64`, `.mjs` + pricing catalog inside `_internal/` | x86_64 build under Rosetta |
+| Backend freezes with PyInstaller one-dir, arm64 | `build_backend.py` locally: 28 MB, `Mach-O 64-bit executable arm64`, `.mjs` + pricing catalog inside `_internal/` | arm64 and x86_64 (Rosetta, setup-python x64) both built; `file` checked each arch |
 | Supervisor starts API + collector, restarts, stops | 17 unit tests (`tests/test_aicur_backend.py`); frozen supervisor run by hand: rows written, clean exit on SIGTERM | |
 | Config generation 0600 / reuse / tighten | 10 unit tests (`tests/test_aicur_config.py`) | |
 | Env overrides redirect; defaults unchanged | `tests/test_install_overrides.py` in fresh interpreters | |
 | `make_dmg.sh` argument checks (NOTARY_PROFILE + ad hoc fails first) | 11 tests (`tests/test_make_dmg_args.py`) | |
-| `make_dmg.sh` builds a verifiable dmg | local run with a shell stand-in for the Swift binary and the arm64 backend in both slots: `codesign --verify --deep --strict` and `hdiutil verify` pass, 34.8 MB | real universal Swift build, real x86_64 backend |
-| Smoke: health + collector row + quit + force quit | `smoke_macos.sh` PASS against that dmg (health 1 s, 3 rows at 3 s, 4 processes gone after SIGTERM and after SIGKILL) | same against the real Swift app, arm64 and `LAUNCH_ARCH=x86_64` |
-| Negative control fails with exit 3 | stand-in app without a backend: `SMOKE FAIL (3)` | real `package_macos_app.sh` zip |
-| Swift `BackendController` compiles | `swiftc -typecheck` for arm64 and x86_64 (CommandLineTools SDK) | full app build (needs Xcode 26) |
-| SIGTERM reaches applicationWillTerminate | no (stand-in is a shell script) | smoke SIGTERM phase against the Swift app |
-| Workflow is valid | `actionlint` 1.7.12 with shellcheck 0.11.0: clean | everything it runs |
-| Signing / notarization path | no identity here | only when the secrets exist |
+| `make_dmg.sh` builds a verifiable dmg | local run with a shell stand-in for the Swift binary and the arm64 backend in both slots: `codesign --verify --deep --strict` and `hdiutil verify` pass, 34.8 MB | universal Swift build with Xcode 26 on `macos-15` plus both real backends; dmg built and smoke-tested |
+| Smoke: health + collector row + quit + force quit | `smoke_macos.sh` PASS against that dmg (health 1 s, 3 rows at 3 s, 4 processes gone after SIGTERM and after SIGKILL) | real Swift app, arm64: health 2 s, 3 rows 3 s, 4 processes, all gone after SIGTERM and after SIGKILL; x86_64 under Rosetta: health 13 s, 3 rows 14 s, same |
+| Negative control fails with exit 3 | stand-in app without a backend: `SMOKE FAIL (3)` | macOS zip, Windows no-backend installer, Linux stub .deb: each `SMOKE FAIL (3)`, each step green only on exactly 3 |
+| Swift `BackendController` compiles | `swiftc -typecheck` for arm64 and x86_64 (CommandLineTools SDK) | full universal app build |
+| SIGTERM reaches applicationWillTerminate | no (stand-in is a shell script) | yes: SIGTERM phase passes against the real app (all four processes gone) |
+| Workflow is valid | `actionlint` 1.7.12 with shellcheck 0.11.0: clean | all three jobs ran to green |
+| Signing / notarization path | no identity here | NOT proven: no secrets configured; runs only when they exist |
 | Tray core: config, /stats probe, summary, menu, backend start/stop | 29 unit tests (`tests/test_tray_core.py`); `windows_tray.py --check` against a live local API printed the real summary | |
-| Windows tray neutral helpers: Run key, menu ids/flags, v4 word decoding | 7 unit tests (`tests/test_windows_tray.py`, fake winreg) | same tests on `windows-latest` |
-| Win32 tray (window, icon, menu, --quit) | nothing: no Windows host here | smoke `--quit` and force-kill phases |
-| Inno Setup script compiles; per-user install, shortcut, Run key, clean uninstall | nothing | `smoke_windows.ps1` on `windows-latest` |
-| `smoke_windows.ps1` parses | no `pwsh` here | parse step runs first in the job |
+| Windows tray neutral helpers: Run key, menu ids/flags, v4 word decoding | 7 unit tests (`tests/test_windows_tray.py`, fake winreg) | same tests pass on `windows-latest` |
+| Win32 tray (window, icon, menu, --quit) | nothing: no Windows host here | tray starts, owns the backend, `--quit` and force kill leave nothing (icon itself not inspected) |
+| Inno Setup script compiles; per-user install, shortcut, Run key, clean uninstall | nothing | installed; Start Menu entry and Run key present; uninstall removed folder, entry and Run key |
+| `smoke_windows.ps1` parses | no `pwsh` here | parse step passed |
 | No liveness probe signals a process on Windows | `tests/test_process_liveness.py` (7 tests; 4 fail on the unfixed tree), source-tree guard with a planted violation | |
-| A planted live Claude session survives a refresh | POSIX run of the same endpoints: refresh `ok`, `claude_runtime` sessions 1, dummy listed `running` and alive | the Windows smoke's exit-7 check |
+| A planted live Claude session survives a refresh | POSIX run of the same endpoints: refresh `ok`, `claude_runtime` sessions 1, dummy listed `running` and alive | Windows: `dummy Claude session pid 4668 still alive after refresh; listed as running` (also run 2) |
+| `.deb`: apt install, global user-unit enable, autostart valid, tray starts the service, /health, collector row, stop leaves nothing, apt remove cleans | emulated Ubuntu 22.04 container: install, symlink, `--check`, exit 3, removal (not /health) | yes, `ubuntu-22.04` with a real user systemd (runs 2 and 3) |
+| AppImage: `--install` writes and starts the user unit, /health, row, stop, `--uninstall` cleans | nothing (appimagetool does not run under emulation here) | yes (runs 2 and 3) |
+| GNOME with no tray host: tray refuses with the plain AppIndicator message (exit 3) | container, under xvfb | yes, in both Linux smokes |
+| Nothing listens beyond 127.0.0.1 | code: `LOOPBACK` only, no `--host` option (unit test) | Linux smoke checks every listener on the port |
+
+Rows with an empty CI cell are unit tests; they also pass in CI (the full suite on macOS, the
+installer subsets on Windows and Linux).
 
 ## Status log
 
