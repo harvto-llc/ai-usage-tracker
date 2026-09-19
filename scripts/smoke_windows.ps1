@@ -26,9 +26,16 @@ param(
     [string]$Python = "python"
 )
 $ErrorActionPreference = "Stop"
+# Strict: an unset variable, a missing property or a reused name fails where it happens.
+Set-StrictMode -Version Latest
+# Script-scope state Fail reads, set before anything can call Fail.
+$script:RealProfile = $env:USERPROFILE
+$script:RealHome = $env:HOME
+$script:ProfileDir = $null
+$script:Dummy = $null
 $AppName = "ai-cur desktop client"
 $App = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
-$Tray = Join-Path $App "aicur-tray.exe"
+$TrayExe = Join-Path $App "aicur-tray.exe"
 $Shortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\$AppName.lnk"
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -80,7 +87,7 @@ function Start-Tray {
     $env:USERPROFILE = $script:ProfileDir
     $env:HOME = $script:ProfileDir
     try {
-        return Start-Process -FilePath $Tray -PassThru
+        return Start-Process -FilePath $TrayExe -PassThru
     } finally {
         $env:USERPROFILE = $script:RealProfile
         $env:HOME = $script:RealHome
@@ -97,15 +104,11 @@ function Assert-AllGone([string]$How) {
     Write-Host "${How}: tray, supervisor, api and collector all gone"
 }
 
-# PowerShell names are case-insensitive: $tray and $Tray are ONE variable. The tray process is
-# $trayProc so it can never overwrite the exe path in $Tray (CI run 35425372263 did exactly that).
+# PowerShell names are case-insensitive: $tray and $Tray are ONE variable. The exe path is
+# $TrayExe and the process $trayProc (CI run 35425372263 overwrote the path with the process).
 # Any error not already turned into a Fail still goes through Fail, and so through its cleanup.
 trap { Fail 2 "unexpected error: $_" }
 
-$script:RealProfile = $env:USERPROFILE
-$script:RealHome = $env:HOME
-$script:ProfileDir = $null
-$script:Dummy = $null
 if (-not (Test-Path $Installer)) { Fail 2 "no such installer: $Installer" }
 if (Test-Listening) { Fail 2 "port $Port already has a listener" }
 if (Test-Path $App) { Fail 2 "$App already exists; this test needs a clean machine" }
@@ -113,11 +116,12 @@ if (Test-Path $App) { Fail 2 "$App already exists; this test needs a clean machi
 # ---- install ----
 $p = Start-Process -FilePath $Installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
 if ($p.ExitCode -ne 0) { Fail 6 "installer exited $($p.ExitCode)" }
-foreach ($path in @($Tray, $Shortcut)) {
+foreach ($path in @($TrayExe, $Shortcut)) {
     if (-not (Test-Path $path)) { Fail 6 "installer did not create $path" }
 }
-$run = (Get-ItemProperty -Path $RunKey -Name $AppName -ErrorAction SilentlyContinue).$AppName
-if ($run -ne "`"$Tray`"") { Fail 6 "Run key value is '$run', expected '`"$Tray`"'" }
+$runProp = Get-ItemProperty -Path $RunKey -Name $AppName -ErrorAction SilentlyContinue
+$run = if ($runProp) { $runProp.$AppName } else { $null }
+if ($run -ne "`"$TrayExe`"") { Fail 6 "Run key value is '$run', expected '`"$TrayExe`"'" }
 Write-Host "installed: $App (Start Menu entry and Run key present)"
 
 # ---- start, health, collector row ----
@@ -165,7 +169,7 @@ do {
     $refresh = (Invoke-RestMethod -Headers $auth "$base/status").refresh
 } while ($refresh.status -eq "running" -and (Get-Date) -lt $deadline)
 if ($refresh.status -eq "running") { Fail 2 "work-ledger refresh still running after ${Timeout}s" }
-$runtime = $refresh.result.claude_runtime
+$runtime = if ($refresh.result.PSObject.Properties["claude_runtime"]) { $refresh.result.claude_runtime } else { $null }
 Write-Host "refresh: $($refresh.status); claude_runtime: $($runtime | ConvertTo-Json -Compress)"
 $views = @((Invoke-RestMethod -Headers $auth "$base/sessions").sessions)
 $seen = $views | Where-Object { $_.provider_session_id -eq "smoke-dummy" }
@@ -182,9 +186,9 @@ Write-Host "processes from the install folder: $(($procs | ForEach-Object { "$($
 if ($procs.Count -lt 4) { Fail 2 "expected tray + supervisor + api + collector, saw $($procs.Count)" }
 
 # ---- quit cleanly ----
-# aicur-tray.exe is a GUI-subsystem program: `& $Tray` would not wait for it or set
+# aicur-tray.exe is a GUI-subsystem program: `& $TrayExe` would not wait for it or set
 # $LASTEXITCODE, so start it and wait explicitly.
-$q = Start-Process -FilePath $Tray -ArgumentList "--quit" -Wait -PassThru
+$q = Start-Process -FilePath $TrayExe -ArgumentList "--quit" -Wait -PassThru
 if ($q.ExitCode -ne 0) { Fail 5 "aicur-tray --quit exited $($q.ExitCode) (no running tray found)" }
 Assert-AllGone "quit (--quit)"
 
