@@ -1,0 +1,50 @@
+#!/bin/sh
+# AppImage entry point for the ai-cur desktop client.
+#
+#   ai-cur-desktop.AppImage               install the user service + autostart on first run,
+#                                         then start the tray
+#   ai-cur-desktop.AppImage --install     (re)write ~/.config/systemd/user/aicur-backend.service
+#                                         and ~/.config/autostart/ai-cur-desktop.desktop, start
+#   ai-cur-desktop.AppImage --uninstall   stop the service, remove both files
+#   ai-cur-desktop.AppImage backend ...   run the bundled backend (what the service runs)
+set -eu
+
+HERE=$(dirname "$(readlink -f "$0")")
+LIB="$HERE/usr/lib/ai-cur-desktop"
+SELF=${APPIMAGE:-$(readlink -f "$0")}
+CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
+UNIT="$CONFIG/systemd/user/aicur-backend.service"
+AUTOSTART="$CONFIG/autostart/ai-cur-desktop.desktop"
+
+install_user_files() {
+  mkdir -p "$(dirname "$UNIT")" "$(dirname "$AUTOSTART")"
+  sed "s|@EXEC@|\"$SELF\" backend|" "$LIB/aicur-backend.service" > "$UNIT"
+  sed "s|^Exec=.*|Exec=\"$SELF\"|" "$HERE/ai-cur-desktop.desktop" > "$AUTOSTART"
+  systemctl --user daemon-reload
+  systemctl --user enable --now aicur-backend.service
+}
+
+case "${1:-}" in
+  backend)
+    shift
+    exec "$LIB/backend/aicur-backend" "$@"
+    ;;
+  --install)
+    install_user_files
+    echo "installed $UNIT and $AUTOSTART"
+    exit 0
+    ;;
+  --uninstall)
+    systemctl --user disable --now aicur-backend.service 2>/dev/null || true
+    rm -f "$UNIT" "$AUTOSTART"
+    systemctl --user daemon-reload
+    echo "removed $UNIT and $AUTOSTART; ~/.usage-tracker left in place"
+    exit 0
+    ;;
+esac
+
+if [ ! -f "$UNIT" ]; then
+  install_user_files
+fi
+# The system interpreter: the tray needs the distribution's python3-gi.
+exec /usr/bin/python3 -B "$LIB/tray/linux_tray.py" "$@"
