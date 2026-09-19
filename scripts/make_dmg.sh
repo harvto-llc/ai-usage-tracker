@@ -17,6 +17,8 @@
 #                                refuses to start when it is set with the ad hoc identity.
 #   APP_BINARY                   use this prebuilt menu bar executable instead of `swift build`
 #                                (local testing only).
+#   RELEASE_BASE_URL             where the dmg will be published; used for the Homebrew cask in
+#                                dist/homebrew/ai-cur-desktop.rb (default: this repo's release).
 #
 # All argument checks run before anything is built, so a bad invocation fails in milliseconds.
 set -euo pipefail
@@ -30,6 +32,7 @@ NOTARY_PROFILE=${NOTARY_PROFILE:-}
 BACKEND_ARM64=${BACKEND_ARM64:-}
 BACKEND_X86_64=${BACKEND_X86_64:-}
 APP_BINARY=${APP_BINARY:-}
+RELEASE_BASE_URL=${RELEASE_BASE_URL:-https://github.com/harvto-llc/ai-usage-tracker/releases/download/v$VERSION}
 APP_NAME="Usage Tracker.app"
 VOLUME_NAME="ai-cur desktop client"
 DMG="$OUTPUT_DIR/ai-cur-desktop-$VERSION.dmg"
@@ -106,4 +109,13 @@ fi
 hdiutil verify -quiet "$DMG"
 
 SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
-printf 'App: %s\nDMG: %s\nSHA-256: %s\n' "$APP" "$DMG" "$SHA256"
+
+mkdir -p "$OUTPUT_DIR/homebrew"
+sed \
+  -e "s/__VERSION__/$VERSION/g" \
+  -e "s/__SHA256__/$SHA256/g" \
+  -e "s|__URL__|$RELEASE_BASE_URL/ai-cur-desktop-$VERSION.dmg|g" \
+  "$ROOT/packaging/homebrew/usage-tracker.rb.template" \
+  > "$OUTPUT_DIR/homebrew/ai-cur-desktop.rb"
+
+printf 'App: %s\nDMG: %s\nSHA-256: %s\nCask: %s\n' "$APP" "$DMG" "$SHA256" "$OUTPUT_DIR/homebrew/ai-cur-desktop.rb"

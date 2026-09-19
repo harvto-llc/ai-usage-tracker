@@ -1,4 +1,37 @@
-# Usage Tracker
+# Usage Tracker (ai-cur desktop client)
+
+## Download
+
+One installer per platform. Each one bundles its own backend (no Python, no
+terminal), runs it on `127.0.0.1` only, and starts it with your session.
+
+| Platform | File | Install |
+|----------|------|---------|
+| macOS 14+ (Apple silicon and Intel) | `ai-cur-desktop-<version>.dmg` | Open the dmg, drag the app to Applications, open it. |
+| Windows 10/11 (x64) | `ai-cur-desktop-setup-<version>.exe` | Run it. Installs for your user only, no admin rights. |
+| Ubuntu 22.04+ / Debian (x86_64) | `ai-cur-desktop_<version>_amd64.deb` | `sudo apt install ./ai-cur-desktop_<version>_amd64.deb` |
+| Other Linux (x86_64) | `ai-cur-desktop-<version>-x86_64.AppImage` | `chmod +x` it and run it once. |
+
+All files are on the [releases page](https://github.com/harvto-llc/ai-usage-tracker/releases),
+each with a `.sha256` next to it.
+
+Good to know:
+
+- Builds are unsigned until release signing is set up; those files end in
+  `-unsigned`. On macOS, right-click the app and choose Open the first time. On
+  Windows, choose "More info" and then "Run anyway" in SmartScreen.
+- Linux on stock GNOME: GNOME Shell has no tray area of its own. Install and
+  enable the AppIndicator extension (`gnome-shell-extension-appindicator`,
+  already on Ubuntu) to see the icon. The client tells you once if it cannot
+  show one; the backend keeps collecting either way.
+- Browser-based quota refresh for Claude and Codex needs Node.js and Google
+  Chrome on your machine. Without them, local activity, tokens and the API
+  still work; those quota gauges stay empty.
+- Uninstalling leaves your data in `~/.usage-tracker`.
+
+Prefer to run from source? See [Install from source](#install-from-source) below.
+
+## About
 
 Usage Tracker is a local macOS menu bar app and backend for watching AI coding
 tool usage across Claude, Codex, and Cursor. It combines local activity scans
@@ -98,7 +131,7 @@ still work as compatibility aliases, but new installs should use
 - Nothing else: the launchd installer finds your `python3` and `uvicorn` on PATH,
   or set `PYTHON=` and `UVICORN=` when running it.
 
-## Install
+## Install from source
 
 Clone the repo:
 
@@ -317,9 +350,34 @@ exists, and pricing coverage. `explain` also separates instructions, files,
 shell, web, connectors, app control, subagents, and model output. Dollar values
 are estimates, not billed spend or provider quota debits.
 
-## macOS Release Build
+## Release Builds
 
-Build a versioned local `.app`, zip archive, update manifest, and Homebrew cask:
+`.github/workflows/release.yml` builds and smoke-tests all three installers on
+every pull request and on `v*` tags, and attaches them to a draft release on
+tags. Each platform can also be built by hand:
+
+```bash
+# macOS: freeze the backend once per architecture, then build the dmg
+python3 packaging/backend/build_backend.py --dist dist/backend-arm64
+BACKEND_ARM64=dist/backend-arm64/aicur-backend BACKEND_X86_64=<x86_64 build> \
+  VERSION=0.2.0 ./scripts/make_dmg.sh
+./scripts/smoke_macos.sh dist/ai-cur-desktop-0.2.0.dmg
+
+# Linux (on Ubuntu): .deb and AppImage
+python3 packaging/backend/build_backend.py --dist dist/linux
+BACKEND_DIR=dist/linux/aicur-backend VERSION=0.2.0 ./scripts/build_linux.sh
+```
+
+Windows uses the same `build_backend.py` (plus `--target windows-tray`) and
+`packaging/windows/aicur-desktop.iss` with Inno Setup 6. Signing and
+notarization are optional inputs; see `docs/installers.md` for what each script
+checks and what has been proven where.
+
+### Menu bar app only (zip)
+
+The older zip packaging builds just the Swift app, without a backend. It is
+kept as the release workflow's negative control. Build a versioned local
+`.app`, zip archive, update manifest, and Homebrew cask:
 
 ```bash
 VERSION=0.1.0 BUILD_NUMBER=1 ./scripts/package_macos_app.sh
