@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import time
 
 from src import repository_discovery, work_ledger
+from src.process_liveness import pid_alive
 
 
 ACTIVE_SECONDS = 5 * 60
@@ -17,16 +17,8 @@ _DEFAULT_BRANCHES = frozenset({"main", "master", "trunk", "develop", "dev", "hea
 
 
 def _process_is_running(pid: object) -> bool:
-    try:
-        normalized = int(pid)
-        if normalized <= 0:
-            return False
-        os.kill(normalized, 0)
-    except (TypeError, ValueError, ProcessLookupError):
-        return False
-    except PermissionError:
-        return True
-    return True
+    # Never os.kill(pid, 0) here: on Windows that terminates the user's Claude session.
+    return pid_alive(pid)
 
 
 def live_claude_sessions(home: Path | None = None) -> dict[str, dict]:

@@ -35,6 +35,7 @@ if not FROZEN:
     sys.path.insert(0, str(HERE))
 
 import aicur_config  # noqa: E402
+from src.process_liveness import pid_alive  # noqa: E402,F401 - the one liveness probe
 
 LOOPBACK = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -55,33 +56,8 @@ def self_command(subcommand: str, *args: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Process liveness. Never os.kill(pid, 0) on Windows: there it TERMINATES the process.
+# Process liveness: src/process_liveness.pid_alive, the one probe (see its docstring).
 # ---------------------------------------------------------------------------
-
-def pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-
-        SYNCHRONIZE = 0x00100000
-        WAIT_TIMEOUT = 0x00000102
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-        if not handle:
-            return False
-        try:
-            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
 
 def parent_watch(parent_pid: int | None) -> Callable[[], bool]:
     """Return a callable that is True while the process that launched us is still there.
