@@ -6,7 +6,7 @@ PLIST="$APP/Contents/Info.plist"
 BINARY="$APP/Contents/MacOS/UsageMenuBar"
 
 [[ -x "$BINARY" ]]
-[[ "$(plutil -extract CFBundleIdentifier raw "$PLIST")" == "com.harvto.UsageMenuBar" ]]
+[[ "$(plutil -extract CFBundleIdentifier raw "$PLIST")" == "com.harvto.aicur.desktop" ]]
 [[ "$(plutil -extract CFBundlePackageType raw "$PLIST")" == "APPL" ]]
 [[ "$(plutil -extract LSUIElement raw "$PLIST")" == "true" ]]
 codesign --verify --deep --strict --verbose=2 "$APP"

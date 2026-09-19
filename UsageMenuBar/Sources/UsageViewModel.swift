@@ -163,6 +163,10 @@ class UsageViewModel: ObservableObject {
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 30
+                if apiToken.isEmpty {
+                    // First launch: the bundled backend generates the secret after we start.
+                    apiToken = Self.tokenFromConfigFile()
+                }
                 if !apiToken.isEmpty {
                     request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
                 }
@@ -579,6 +583,9 @@ class UsageViewModel: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 15
+        if apiToken.isEmpty {
+            apiToken = Self.tokenFromConfigFile()
+        }
         if !apiToken.isEmpty {
             request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         }
