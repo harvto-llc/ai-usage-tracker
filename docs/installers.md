@@ -16,7 +16,7 @@ founder's OK.
 | V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | not started |
 | V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | not started |
 
-## Facts this plan rests on (measured 2026-09-18/19)
+## Facts this plan rests on (measured 2026-09-18/19; code cites are to `a1d01a9`)
 
 - `scripts/package_macos_app.sh` zips only the Swift menu bar app. No backend inside.
 - This Mac cannot run `swift build` through Xcode (licence not accepted, exit 69) and has no
@@ -81,7 +81,7 @@ One PyInstaller one-dir executable, `aicur-backend`, built from
 Supervision lives in Python so it is unit-tested here and shared by the macOS app, the Windows
 tray and the Linux tray. Deviation from the charter wording, stated plainly: the GUI app's direct
 child is the supervisor; the API and collector are the supervisor's children. The smoke test
-asserts all three processes are gone after quit.
+asserts all four processes (app, supervisor, API, collector) are gone after quit.
 
 Config (`~/.usage-tracker/config`, mode 0600): `USAGE_TRACKER_SECRET=<token_urlsafe(32)>`
 generated once, reused afterwards, permissions tightened to 0600 if found looser. Data paths are
@@ -94,10 +94,11 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
   `com.harvto.aicur.desktop`. OTLP scope `com.amgad.usage-tracker.fleet` unchanged.
 - Backend at `Contents/Resources/backend/<arch>/aicur-backend` for `arm64` and `x86_64`; the
   universal Swift binary picks its own arch. pydantic-core ships no universal2 wheel, so the two
-  backends are built separately (arm64 native, x86_64 under Rosetta on `macos-14`).
+  backends are built separately (arm64 native, x86_64 under Rosetta on `macos-15`).
 - The app starts `aicur-backend supervise` on launch, stops it on quit and on SIGTERM. Launch at
-  login through `SMAppService.mainApp`, toggled from the menu. `AICUR_SMOKE=1` skips the cookie
-  sentinel and notification prompts so the app can run headless in CI.
+  login through `SMAppService.mainApp`, toggled from the menu (the existing Settings toggle).
+  `AICUR_SMOKE=1` skips the browser-cookie sentinel so the app can run headless in CI; usage
+  alerts, the only notification prompt, are off by default.
 - `scripts/make_dmg.sh` builds `ai-cur-desktop-<version>.dmg` with `hdiutil` only.
 
 ### Decisions and deviations (V1)
