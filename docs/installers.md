@@ -13,8 +13,8 @@ founder's OK.
 |-|------|-------|
 | V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | Oss PASS + supervisor ACCEPT at `b04d453`; waits for first CI run |
 | V2 | Windows tray + Inno Setup per-user installer, CI smoke | FAILED review at `2c760a9`, fixed; Oss PASS + supervisor ACCEPT at `536acab`; nothing Windows-native has run yet |
-| V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | written; `.deb` built and installed in an emulated amd64 Ubuntu 22.04 container; review pending |
-| V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | written; review pending |
+| V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | Oss PASS at `8211f3e`; CI run 2 `linux` job green (negative control, `.deb` smoke, AppImage smoke) |
+| V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | Oss PASS at `8211f3e` |
 
 ## Facts this plan rests on (measured 2026-09-18/19; code cites are to `a1d01a9`)
 
@@ -186,6 +186,19 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
   uninstall, and zaps `~/.usage-tracker` and the new preferences plist. `make_dmg.sh` renders it
   to `dist/homebrew/ai-cur-desktop.rb`. It points at `ai-cur-desktop-<version>.dmg`, the signed
   name; an `-unsigned` CI artifact is not meant for the cask.
+
+### CI run 2 (`35425372263`, at `8211f3e`)
+
+- linux: success. The stub-backend `.deb` failed the smoke with exit 3 as required, then the
+  `.deb` and AppImage smokes passed. Those rows below are proven by CI.
+- macos: the negative control passed (zip, exit 3) and the dmg built. The real Swift app then
+  answered `/health` in 2 s and the collector wrote 3 rows in 3 s. The smoke then failed its
+  process count (3 of 4): an instrument fault, fixed in the next commit, not an app fault.
+- windows: the negative control passed and the installer built. The smoke got through
+  install, Start Menu entry and Run key, `/health`, 3 collector rows, and the planted Claude
+  session still alive after a full refresh (listed as `running`), with tray, supervisor, API
+  and collector all present. It then hit a PowerShell variable-name clash (`$tray` vs `$Tray`),
+  also an instrument fault, fixed. Quit, force quit and uninstall have not run yet.
 
 ### CI run 1 (`35424382569`, at `ea48810`): failed before any build (archived record)
 
