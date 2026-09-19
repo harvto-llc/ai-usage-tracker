@@ -1,6 +1,10 @@
-"""Freeze the backend into a PyInstaller one-dir folder: <dist>/aicur-backend/.
+"""Freeze the backend (or the Windows tray) into a PyInstaller one-dir folder.
 
     python packaging/backend/build_backend.py [--dist DIR] [--work DIR] [--target-arch ARCH]
+    python packaging/backend/build_backend.py --target windows-tray [--dist DIR] [--work DIR]
+
+The backend lands in <dist>/aicur-backend/, the tray in <dist>/aicur-tray/ (windowed: no
+console; it reports into ~/.usage-tracker/logs/tray.log instead).
 
 Same command on macOS, Windows and Linux. Run it with the Python whose architecture you want
 the backend built for (macOS: an arm64 or an x86_64 interpreter); --target-arch is passed to
@@ -16,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "packaging" / "backend" / "aicur_backend.py"
+TRAY_ENTRY = ROOT / "clients" / "windows_tray.py"
 
 # Files the backend reads next to its own modules at runtime. Each resolves through
 # Path(__file__), which PyInstaller maps onto the bundle root.
@@ -53,17 +58,41 @@ def pyinstaller_args(dist: Path, work: Path, target_arch: str | None) -> list[st
     return args
 
 
+def tray_args(dist: Path, work: Path) -> list[str]:
+    return [
+        "--noconfirm",
+        "--clean",
+        "--onedir",
+        "--windowed",
+        "--name", "aicur-tray",
+        "--distpath", str(dist),
+        "--workpath", str(work),
+        "--specpath", str(work),
+        "--paths", str(TRAY_ENTRY.parent),
+        "--paths", str(ENTRY.parent),
+        "--hidden-import", "aicur_config",
+        "--hidden-import", "tray_core",
+        str(TRAY_ENTRY),
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dist", type=Path, default=ROOT / "dist" / "backend")
     parser.add_argument("--work", type=Path, default=ROOT / "build" / "backend")
     parser.add_argument("--target-arch", default=None)
+    parser.add_argument("--target", choices=["backend", "windows-tray"], default="backend")
     args = parser.parse_args(argv)
 
     import PyInstaller.__main__
 
-    PyInstaller.__main__.run(pyinstaller_args(args.dist, args.work, args.target_arch))
-    exe = args.dist / "aicur-backend" / ("aicur-backend.exe" if os.name == "nt" else "aicur-backend")
+    if args.target == "windows-tray":
+        PyInstaller.__main__.run(tray_args(args.dist, args.work))
+        name = "aicur-tray"
+    else:
+        PyInstaller.__main__.run(pyinstaller_args(args.dist, args.work, args.target_arch))
+        name = "aicur-backend"
+    exe = args.dist / name / (f"{name}.exe" if os.name == "nt" else name)
     if not exe.is_file():
         print(f"build produced no executable at {exe}", file=sys.stderr)
         return 1
