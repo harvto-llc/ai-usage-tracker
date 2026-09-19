@@ -1,0 +1,223 @@
+name: release
+
+# Builds the installers. On a v* tag the artifacts are also attached to a DRAFT release; a
+# person publishes it. Every job must pass with no secrets configured: signing steps run only
+# when their secrets exist, and no smoke test is ever skipped.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  macos:
+    # Not macos-14: SweetCookieKit 0.4.0 needs swift-tools 6.2 (Xcode 26), which does not run
+    # on macOS 14. See docs/installers.md.
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      PYTHON_VERSION: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode 26
+        run: |
+          xcode=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            echo "::error::no Xcode 26 on this runner; the Swift package needs swift-tools 6.2"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          swift --version
+
+      - name: Rosetta (for the x86_64 backend build and smoke)
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      - name: Python (arm64)
+        id: py_arm64
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: arm64
+
+      - name: Unit tests
+        run: |
+          python -m pip install -r requirements.txt pytest httpx
+          python -m pytest -q
+
+      - name: Backend arm64
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-arm64"
+          "$RUNNER_TEMP/venv-arm64/bin/pip" install -r requirements.txt pyinstaller
+          "$RUNNER_TEMP/venv-arm64/bin/python" packaging/backend/build_backend.py \
+            --dist dist/backend-arm64 --work build/arm64
+          file dist/backend-arm64/aicur-backend/aicur-backend | tee /dev/stderr | grep -q 'arm64'
+
+      - name: Python (x86_64)
+        id: py_x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+
+      - name: Backend x86_64
+        env:
+          PY_X64: ${{ steps.py_x64.outputs.python-path }}
+        run: |
+          arch -x86_64 "$PY_X64" -m venv "$RUNNER_TEMP/venv-x64"
+          arch -x86_64 "$RUNNER_TEMP/venv-x64/bin/pip" install -r requirements.txt pyinstaller
+          arch -x86_64 "$RUNNER_TEMP/venv-x64/bin/python" packaging/backend/build_backend.py \
+            --dist dist/backend-x86_64 --work build/x86_64
+          file dist/backend-x86_64/aicur-backend/aicur-backend | tee /dev/stderr | grep -q 'x86_64'
+
+      # The wrong answer first: the old zip packaging has no backend, so the same smoke test
+      # must fail on it, and fail with exit 3 ("/health never answered"), not any failure.
+      - name: Negative control - smoke must fail on the backend-less zip
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          OUTPUT_DIR="$RUNNER_TEMP/zip" scripts/package_macos_app.sh
+          set +e
+          TIMEOUT=20 scripts/smoke_macos.sh "$RUNNER_TEMP/zip/UsageTracker-$VERSION.zip"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 3 ]; then
+            echo "::error::negative control expected exit 3 (no backend health), got $rc"
+            exit 1
+          fi
+          echo "negative control failed as required (exit 3)"
+
+      - name: Signing identity (only when the secrets exist)
+        id: signing
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_CERT_PASSWORD" ]; then
+            echo "No signing secrets: building an ad hoc signed, unsigned-for-distribution dmg."
+            {
+              echo "identity=-"
+              echo "notary="
+              echo "suffix=-unsigned"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          # Prepend ours to the user search list (names from `security` are one per line).
+          existing=()
+          while IFS= read -r line; do existing+=("$(echo "$line" | tr -d '" ')"); done \
+            < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::MACOS_CERT_P12 holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "suffix=" >> "$GITHUB_OUTPUT"
+          if [ -n "$NOTARY_APPLE_ID" ] && [ -n "$NOTARY_TEAM_ID" ] && [ -n "$NOTARY_PASSWORD" ]; then
+            xcrun notarytool store-credentials aicur-notary --apple-id "$NOTARY_APPLE_ID" \
+              --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --keychain "$keychain"
+            echo "notary=aicur-notary" >> "$GITHUB_OUTPUT"
+          else
+            echo "notary=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          BACKEND_ARM64: dist/backend-arm64/aicur-backend
+          BACKEND_X86_64: dist/backend-x86_64/aicur-backend
+          SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_PROFILE: ${{ steps.signing.outputs.notary }}
+        run: scripts/make_dmg.sh
+
+      - name: Smoke test (arm64)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/smoke_macos.sh "dist/ai-cur-desktop-$VERSION.dmg"
+
+      - name: Smoke test (x86_64 under Rosetta)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: LAUNCH_ARCH=x86_64 TIMEOUT=60 scripts/smoke_macos.sh "dist/ai-cur-desktop-$VERSION.dmg"
+
+      - name: Name the artifact
+        id: artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SUFFIX: ${{ steps.signing.outputs.suffix }}
+        run: |
+          name="ai-cur-desktop-$VERSION$SUFFIX.dmg"
+          if [ "dist/ai-cur-desktop-$VERSION.dmg" != "dist/$name" ]; then
+            mv "dist/ai-cur-desktop-$VERSION.dmg" "dist/$name"
+          fi
+          shasum -a 256 "dist/$name" | tee "dist/$name.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            dist/${{ steps.artifact.outputs.name }}
+            dist/${{ steps.artifact.outputs.name }}.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la artifacts
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" artifacts/* --draft --title "ai-cur desktop client $TAG" \
+              --notes "Draft built by CI. Review the smoke-test logs before publishing." \
+              --repo "$GITHUB_REPOSITORY"
+          fi
