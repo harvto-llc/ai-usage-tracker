@@ -12,7 +12,7 @@ founder's OK.
 | | What | State |
 |-|------|-------|
 | V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | Oss PASS + supervisor ACCEPT at `b04d453`; waits for first CI run |
-| V2 | Windows tray + Inno Setup per-user installer, CI smoke | written and unit-tested here; nothing Windows-native has run yet |
+| V2 | Windows tray + Inno Setup per-user installer, CI smoke | FAILED review at `2c760a9` (see below), fixed and resubmitted; nothing Windows-native has run yet |
 | V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | not started |
 | V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | not started |
 
@@ -142,6 +142,39 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
 - Authenticode secrets are named `WINDOWS_CERT_PFX` (base64 .pfx) and `WINDOWS_CERT_PASSWORD`;
   the charter did not name them.
 
+### V2 review FAIL at `2c760a9` (archived record; fixed in `ec4a84f`, `a00917f`)
+
+AS RAISED by the supervisor: `src/session_runtime.py` `_process_is_running` called
+`os.kill(pid, 0)` on every platform. On Windows that is TerminateProcess, and the PIDs come from
+`~/.claude/sessions/*.json`, the user's live Claude Code sessions. The probe runs on every
+`GET /work-ledger/sessions` and every enabled work-ledger refresh, so the Windows backend as
+built at `2c760a9` would have killed the user's sessions. I had fixed the probe only in the file
+I wrote.
+
+Fix: `src/process_liveness.pid_alive` is the one probe; `session_runtime` and the supervisor
+import it. `tests/test_process_liveness.py` runs on any OS with `sys.platform` patched to
+`win32` and `os.kill` recorded (4 of its tests fail on the unfixed tree), and its source-tree
+guard allows exactly one `os.kill(<pid>, 0)` in `src/`, `clients/`, `packaging/`: the POSIX
+branch of `pid_alive`. The Windows smoke plants a live dummy process as a Claude session before
+the backend starts, runs a full refresh and a session listing, and fails (exit 7) if the dummy
+dies, or (exit 2) if the planted session never shows up.
+
+Sweep for the same class (grep over `src/`, `clients/`, `packaging/`, `scripts/` at `a00917f`):
+
+- `os.kill(<pid>, 0)`: only `src/process_liveness.py` (POSIX branch), enforced by the guard test.
+- `os.killpg`: none.
+- Signals sent to PIDs read from disk: none. `session_runtime` is the only code that reads PIDs
+  from disk, and it now only probes them.
+- `Popen.terminate()` / `.kill()`: `packaging/backend/aicur_backend.py` (its own children),
+  `clients/tray_core.py` (its own supervisor), `src/pty_scraper.py` (its own `codex` child). All
+  target the caller's own child; on Windows that is TerminateProcess, which is the intent. The
+  only consequence is that a Windows quit is not graceful: the supervisor is terminated and its
+  API and collector exit through their own parent watch within about a second.
+- `signal.signal(SIGTERM/SIGINT)` in the supervisor: valid on Windows (never delivered by the
+  tray, harmless).
+- `child.kill("SIGKILL")` in `scripts/fetch_*.mjs`: Node's own Chrome child; on Windows Node
+  maps it to TerminateProcess of that child.
+
 ## Proven here vs waits for CI
 
 | Claim | Proven here (how) | Waits for CI |
@@ -163,6 +196,8 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
 | Win32 tray (window, icon, menu, --quit) | nothing: no Windows host here | smoke `--quit` and force-kill phases |
 | Inno Setup script compiles; per-user install, shortcut, Run key, clean uninstall | nothing | `smoke_windows.ps1` on `windows-latest` |
 | `smoke_windows.ps1` parses | no `pwsh` here | parse step runs first in the job |
+| No liveness probe signals a process on Windows | `tests/test_process_liveness.py` (7 tests; 4 fail on the unfixed tree), source-tree guard with a planted violation | |
+| A planted live Claude session survives a refresh | POSIX run of the same endpoints: refresh `ok`, `claude_runtime` sessions 1, dummy listed `running` and alive | the Windows smoke's exit-7 check |
 
 ## Status log
 
