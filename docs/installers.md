@@ -12,9 +12,9 @@ founder's OK.
 | | What | State |
 |-|------|-------|
 | V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | Oss PASS + supervisor ACCEPT at `b04d453`; waits for first CI run |
-| V2 | Windows tray + Inno Setup per-user installer, CI smoke | FAILED review at `2c760a9` (see below), fixed and resubmitted; nothing Windows-native has run yet |
-| V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | not started |
-| V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | not started |
+| V2 | Windows tray + Inno Setup per-user installer, CI smoke | FAILED review at `2c760a9`, fixed; Oss PASS + supervisor ACCEPT at `536acab`; nothing Windows-native has run yet |
+| V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | written; `.deb` built and installed in an emulated amd64 Ubuntu 22.04 container; review pending |
+| V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | written; review pending |
 
 ## Facts this plan rests on (measured 2026-09-18/19; code cites are to `a1d01a9`)
 
@@ -141,6 +141,89 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
   test must exit 3 on it, and it runs before the real installer is built.
 - Authenticode secrets are named `WINDOWS_CERT_PFX` (base64 .pfx) and `WINDOWS_CERT_PASSWORD`;
   the charter did not name them.
+
+### Linux (V3)
+
+- The backend runs as the systemd user unit `aicur-backend.service`
+  (`ExecStart=... aicur-backend supervise`, `Restart=on-failure`), so its parent is the user's
+  systemd manager and `systemctl --user stop` stops everything (KillMode control-group, plus
+  the children's own parent watch). The `.deb` enables it for every user with
+  `systemctl --global enable`; the AppImage writes it into `~/.config/systemd/user` on first
+  run (`--install`) with `ExecStart="<AppImage>" backend supervise`.
+- The tray (`clients/linux_tray.py`) runs on `/usr/bin/python3` with the distribution's
+  `python3-gi`, not frozen: the `.deb` depends on `python3-gi`, `gir1.2-gtk-3.0` and
+  `gir1.2-ayatanaappindicator3-0.1`. The launcher names `/usr/bin/python3` explicitly because a
+  venv or toolcache `python3` earlier on PATH has no `gi` (this would have broken the CI smoke,
+  where setup-python's interpreter is first on PATH).
+- The tray does not own the backend on Linux; on start it runs
+  `systemctl --user start aicur-backend.service` if the unit is inactive. Quit quits the tray.
+- The recorded GNOME defect: stock GNOME Shell has no tray. The `.deb` description says so; at
+  start the tray asks the session bus whether anything owns `org.kde.StatusNotifierWatcher`,
+  and when nothing does it shows a plain dialog once (marker `~/.usage-tracker/no-tray-host-warned`)
+  and exits 3 instead of running invisibly. The CI smoke asserts that exit and message under
+  xvfb, where no tray host exists; the visible-icon path is not exercised by CI.
+- Ported from Codex's unmerged `clients/linux_tray.py`: the Ayatana-then-legacy binding
+  fallback, the StatusNotifierWatcher probe, the refusal to run invisibly, and the delayed
+  republish of menu and label. Its dashboard menu is not ported.
+- `appimagetool` is pinned to release 1.9.1 by SHA-256
+  `ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0` (two independent
+  downloads matched) and the build fails on a mismatch.
+- The `.deb` maintainer field is a placeholder (`maintainer@harvto.invalid`); the founder should
+  name a real address before a public release.
+- Negative control on Linux too: a `.deb` whose backend is a stub that exits at once must fail
+  the smoke with exit 3; it runs before the real packages are built.
+- Codex quota on Windows (found while sweeping, fixed in `309e61d`): the app-server pipe was
+  read with `select()`, which accepts only sockets on Windows, so Codex quota never loaded
+  there. Now a reader thread.
+
+### Docs (V4)
+
+- `README.md` opens with the four downloads, what "unsigned" means per platform, the GNOME note,
+  the Node/Chrome limit from the refutation check above, and where data stays after uninstall.
+  The source install follows under "Install from source".
+- `CHANGELOG.md` is new.
+- The Homebrew cask template is now cask `ai-cur-desktop`, installs the dmg, quits the app on
+  uninstall, and zaps `~/.usage-tracker` and the new preferences plist. `make_dmg.sh` renders it
+  to `dist/homebrew/ai-cur-desktop.rb`. It points at `ai-cur-desktop-<version>.dmg`, the signed
+  name; an `-unsigned` CI artifact is not meant for the cask.
+
+### CI run 1 (`35424382569`, at `ea48810`): failed before any build (archived record)
+
+AS MEASURED by the supervisor and re-read here from `gh run view --log-failed`:
+
+- macos, Unit tests: 4 failed, 752 passed. Pre-existing tests in `tests/test_pty_scraper.py`
+  asserted Pacific wall-clock strings (`'Apr 11 2:00 AM' == 'Apr 10 7:00 PM'` on the UTC
+  runner). Reproduced here with `TZ=UTC`. A zone sweep found four more such tests
+  (`Asia/Tokyo`, `Pacific/Kiritimati`, `Pacific/Pago_Pago`). Fixed in `a9bb7fc`: each test pins
+  its own zone through the `local_timezone` fixture. The full suite passes under default, UTC,
+  Asia/Tokyo, America/Los_Angeles, Pacific/Kiritimati, Pacific/Pago_Pago, Asia/Kolkata and
+  Australia/Lord_Howe (766 each). On Windows, which has no `time.tzset`, those eight tests
+  skip; the Windows job does not run them.
+- windows, Unit tests: `tests/conftest.py` imported `pwd`, so no test ran. Fixed in `29b8c7b`:
+  the real home comes from `pwd` where it exists and from `USERPROFILE` otherwise, and the
+  sandbox moves `USERPROFILE` as well as `HOME`. Simulated here by blocking `pwd`: the Windows
+  job's test subset passes (72). `58640fa` adds `tests/test_process_liveness.py` to that
+  subset; it had been missing.
+- Nothing was built or smoke-tested, so every "waits for CI" row below still waits.
+
+Can a run look green with builds unrun? No. Every build and smoke step is unconditional, and
+the workflow has no `continue-on-error` (checked by grep: the only `if:` lines are Authenticode
+signing, which needs its secrets, and the release job, which needs a tag). A failed step
+stops its job and turns the run red. The `release` job shows "skipped" on every pull request
+by design (tags only) and on a tag whose builds failed; in both cases the run is red, not green.
+
+What the Windows backend does without the pieces the scrapers expect (`src/pty_scraper.py`
+has no pty: the name is historical, and it imports nothing POSIX-only):
+
+- Codex quota: `codex app-server` over a pipe. It works on Windows since `309e61d`, if `codex`
+  is on PATH; otherwise it is skipped.
+- Cursor quota: plain HTTPS; same on every platform.
+- Claude web quota and Codex analytics: Node plus Chrome. The helpers' Chrome search list
+  (`scripts/fetch_*.mjs`) has macOS paths and PATH names only, so on Windows they fail to find
+  Chrome, the collector logs the failure, and those gauges stay empty. Local activity, tokens
+  and the API are unaffected. Known limit; README says Node and Chrome are needed.
+- Reset-time formatting uses `%-d` (POSIX-only); on Windows it raises ValueError, which is
+  caught, and the fallback formatter is used.
 
 ### V2 review FAIL at `2c760a9` (archived record; fixed in `ec4a84f`, `a00917f`)
 
