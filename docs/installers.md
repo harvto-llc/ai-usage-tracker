@@ -11,8 +11,8 @@ founder's OK.
 
 | | What | State |
 |-|------|-------|
-| V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | built and proven locally with a stand-in app; waits for first CI run |
-| V2 | Windows tray + Inno Setup per-user installer, CI smoke | not started |
+| V1 | macOS dmg, bundled backend, CI build + smoke test, unsigned | Oss PASS + supervisor ACCEPT at `b04d453`; waits for first CI run |
+| V2 | Windows tray + Inno Setup per-user installer, CI smoke | written and unit-tested here; nothing Windows-native has run yet |
 | V3 | Linux tray + `.deb` + AppImage, systemd user unit, CI smoke under xvfb | not started |
 | V4 | README downloads first, CHANGELOG, Homebrew cask on the dmg | not started |
 
@@ -118,6 +118,30 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
 - The dmg holds two backends (~28 MB each), so it is ~35 MB compressed.
 - `scripts/package_macos_app.sh` (zip, no backend) is kept unchanged as the negative control.
 
+### Windows (V2)
+
+- `clients/windows_tray.py` owns the backend like the Mac app does: it starts
+  `backend\aicur-backend.exe supervise --parent-pid <tray pid>`. There is no SIGTERM on Windows,
+  so Quit stops the supervisor with TerminateProcess and the API and collector exit through
+  their own parent watch (OpenProcess(SYNCHRONIZE) + WaitForSingleObject, never
+  `os.kill(pid, 0)`, which terminates the process on Windows).
+- Ported from Codex's unmerged tray: the Win32 layer only. Its menu drove a web dashboard and
+  a browser entry-code handoff that this repository does not have, so the menu here is the
+  quota summary, Refresh, Open logs folder, Start at login (the HKCU Run value) and Quit.
+  Codex's acceptance harness is not ported.
+- `AICUR_SMOKE=1` lets the tray run without an icon when the session has no notification area
+  (a CI runner); without it the tray refuses to start invisibly, as Codex's did.
+- `aicur-tray.exe --quit` posts WM_CLOSE to the running tray's window. The installer uses it
+  before replacing or deleting files, then `taskkill /F /T` as a backstop.
+- The installer is per user (`PrivilegesRequired=lowest`) under
+  `%LOCALAPPDATA%\Programs\ai-cur desktop client`. Uninstall removes the folder, the Start
+  Menu entry and the Run value, and leaves `~\.usage-tracker` (data and config) in place, as
+  `scripts/install-launchd.sh --uninstall` does.
+- Negative control on Windows: the same `.iss` with `/DNoBackend` (tray, no backend). The smoke
+  test must exit 3 on it, and it runs before the real installer is built.
+- Authenticode secrets are named `WINDOWS_CERT_PFX` (base64 .pfx) and `WINDOWS_CERT_PASSWORD`;
+  the charter did not name them.
+
 ## Proven here vs waits for CI
 
 | Claim | Proven here (how) | Waits for CI |
@@ -134,6 +158,11 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
 | SIGTERM reaches applicationWillTerminate | no (stand-in is a shell script) | smoke SIGTERM phase against the Swift app |
 | Workflow is valid | `actionlint` 1.7.12 with shellcheck 0.11.0: clean | everything it runs |
 | Signing / notarization path | no identity here | only when the secrets exist |
+| Tray core: config, /stats probe, summary, menu, backend start/stop | 26 unit tests (`tests/test_tray_core.py`); `windows_tray.py --check` against a live local API printed the real summary | |
+| Windows tray neutral helpers: Run key, menu ids/flags, v4 word decoding | 10 unit tests (`tests/test_windows_tray.py`, fake winreg) | same tests on `windows-latest` |
+| Win32 tray (window, icon, menu, --quit) | nothing: no Windows host here | smoke `--quit` and force-kill phases |
+| Inno Setup script compiles; per-user install, shortcut, Run key, clean uninstall | nothing | `smoke_windows.ps1` on `windows-latest` |
+| `smoke_windows.ps1` parses | no `pwsh` here | parse step runs first in the job |
 
 ## Status log
 
