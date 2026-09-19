@@ -33,6 +33,12 @@ Next bounded action (assigned by the supervisor; not started):
      `spctl -a -vv` and `xcrun stapler validate` on the dmg, `signtool verify /pa` on the exe
    - how to yank a bad release
    Then request a supervisor verdict by exact SHA.
+3. Two non-blocking notes from Oss's PASS at `7586f71`:
+   - In `release.yml`, add a comment above `gate` saying any new build job must be added to
+     both `gate` and `release` `needs`. There is no automatic way to list all jobs.
+   - In `smoke_windows.ps1`, check `$refresh.PSObject.Properties["result"]` before reading
+     `$refresh.result`. A refresh that ends in error without `result` then fails with a clear
+     message instead of "unexpected error" (it already fails closed).
 
 Open for the founder: the signing secrets, the first `v*` tag, a real `.deb` maintainer
 address, and whether to require the `gate` check on PRs.
