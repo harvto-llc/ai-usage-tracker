@@ -327,7 +327,8 @@ def test_usage_bundle_scans_once_for_quota_and_periods(tmp_path):
     assert bundle["periods"]["week"]["total_tokens"] == 280
 
 
-def test_provider_usage_trend_zero_fills_and_reports_top_driver(tmp_path):
+def test_provider_usage_trend_zero_fills_and_reports_top_driver(tmp_path, local_timezone):
+    local_timezone("UTC")  # the fixture's timestamps and day buckets are written in UTC
     now = datetime(2026, 7, 24, 20, tzinfo=timezone.utc)
     root = tmp_path / ".claude" / "projects" / "p"
     root.mkdir(parents=True)

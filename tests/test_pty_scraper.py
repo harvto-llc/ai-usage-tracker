@@ -182,7 +182,8 @@ class TestScrapeClaudeUsageWeb:
         ):
             assert claude_web_usage_configured() is True
 
-    def test_parses_structured_usage_payload(self):
+    def test_parses_structured_usage_payload(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "currentSession": {
                 "usedPercent": 24,
@@ -273,7 +274,8 @@ class TestScrapeClaudeUsageWeb:
         assert bucket["window_kind"] == "monthly"
         assert bucket["scope_kind"] == "model"
 
-    def test_prefers_current_session_reset_over_nested_weekly_reset(self):
+    def test_prefers_current_session_reset_over_nested_weekly_reset(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "currentSession": {
                 "usedPercent": 24,
@@ -297,7 +299,8 @@ class TestScrapeClaudeUsageWeb:
         assert result["weekly_pct"] == 17
         assert result["weekly_reset"] == "Apr 16 11:00 PM"
 
-    def test_parses_live_claude_schema(self):
+    def test_parses_live_claude_schema(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "five_hour": {
                 "utilization": 24.0,
@@ -331,7 +334,8 @@ class TestScrapeClaudeUsageWeb:
         assert result["session_reset"] == "Apr 10 7:00 PM"
         assert result["weekly_reset"] == "Apr 16 11:00 PM"
 
-    def test_parses_fable_from_scoped_limits_array(self):
+    def test_parses_fable_from_scoped_limits_array(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "five_hour": {
                 "utilization": 81,
