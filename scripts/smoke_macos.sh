@@ -28,9 +28,12 @@ QUIT_TIMEOUT=${QUIT_TIMEOUT:-15}
 LAUNCH_ARCH=${LAUNCH_ARCH:-}
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/aicur-smoke.XXXXXX")
-# Canonical path (no "//", /var -> /private/var): process argv carries the canonical form,
-# and every pgrep below matches on it.
+# Canonical path (no "//" from a trailing-slash TMPDIR, /var -> /private/var).
 WORK=$(cd "$WORK" && pwd -P)
+# Match processes on the unique work-dir NAME, not the full path: the same file shows up as
+# /private/var/... (pwd -P) in some argv and /var/... in others (Foundation standardises the
+# bundle path, dropping /private), and CI run 35425372263 counted 3 of 4 processes because of it.
+MARK="${WORK##*/}/Applications/"
 MOUNT=""
 APP_PID=""
 
@@ -38,7 +41,7 @@ fail() { local code=$1; shift; printf 'SMOKE FAIL (%s): %s\n' "$code" "$*" >&2; 
 
 cleanup() {
   if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then kill -KILL "$APP_PID" 2>/dev/null || true; fi
-  pgrep -f "$WORK/Applications/" 2>/dev/null | xargs kill -KILL 2>/dev/null || true
+  pgrep -f "$MARK" 2>/dev/null | xargs kill -KILL 2>/dev/null || true
   # Leave the port free for whatever runs next.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
@@ -116,8 +119,8 @@ wait_health() {
 # Asserts every process started from the copied app is gone and the port is closed.
 assert_all_gone() {
   local how=$1 deadline=$((SECONDS + QUIT_TIMEOUT)) left
-  while [ $SECONDS -lt $deadline ] && pgrep -f "$WORK/Applications/" >/dev/null; do sleep 1; done
-  left=$(pgrep -f "$WORK/Applications/" | tr '\n' ' ' || true)
+  while [ $SECONDS -lt $deadline ] && pgrep -f "$MARK" >/dev/null; do sleep 1; done
+  left=$(pgrep -f "$MARK" | tr '\n' ' ' || true)
   [ -z "$left" ] || fail 5 "processes survived $how after ${QUIT_TIMEOUT}s: $left"
   if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then fail 5 "port $PORT still listening after $how"; fi
   printf '%s: app, supervisor, api and collector all gone\n' "$how"
@@ -149,11 +152,11 @@ done
 [ "${ROWS:-0}" -ge 1 ] || fail 4 "collector wrote no provider_metric_samples row within ${TIMEOUT}s"
 
 # Every process started from the copied app: the app, the supervisor, the API, the collector.
-BEFORE=$(pgrep -f "$WORK/Applications/" | tr '\n' ' ' || true)
+BEFORE=$(pgrep -f "$MARK" | tr '\n' ' ' || true)
 printf 'processes from the app before quit: %s\n' "$BEFORE"
 [ "$(echo "$BEFORE" | wc -w)" -ge 4 ] || fail 2 "expected app + supervisor + api + collector, saw: $BEFORE"
 if [ -n "$LAUNCH_ARCH" ]; then
-  pgrep -fl "$WORK/Applications/.*/backend/$LAUNCH_ARCH/" >/dev/null \
+  pgrep -fl "$MARK.*/backend/$LAUNCH_ARCH/" >/dev/null \
     || fail 2 "LAUNCH_ARCH=$LAUNCH_ARCH but no backend/$LAUNCH_ARCH process is running"
 fi
 
@@ -164,7 +167,7 @@ assert_all_gone "quit (SIGTERM)"
 # watch (and the children's own watch on the supervisor) can clean up.
 launch
 wait_health || fail 3 "relaunch: /health did not answer within ${TIMEOUT}s"
-[ "$(pgrep -f "$WORK/Applications/" | wc -l)" -ge 4 ] || fail 2 "relaunch: backend processes missing"
+[ "$(pgrep -f "$MARK" | wc -l)" -ge 4 ] || fail 2 "relaunch: backend processes missing"
 kill -KILL "$APP_PID"
 assert_all_gone "force quit (SIGKILL)"
 APP_PID=""
