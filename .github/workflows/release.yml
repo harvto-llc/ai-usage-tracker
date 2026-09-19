@@ -426,7 +426,8 @@ jobs:
           if-no-files-found: error
 
   # One check a pull request can require: green only when EVERY build-and-smoke job succeeded.
-  # A failed, cancelled or skipped job (or one added later and forgotten here) turns it red.
+  # A failed, cancelled or skipped job turns it red. Its needs list must name every other job
+  # except release; tests/test_release_workflow.py derives that from this file and fails if not.
   gate:
     if: always()
     needs: [macos, windows, linux]
@@ -444,7 +445,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, windows, linux]
+    needs: [gate]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
