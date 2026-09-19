@@ -42,6 +42,9 @@ COLLECTOR_INTERVAL = 60
 BACKOFF_SECONDS = (1, 2, 4, 8, 16, 30)
 STABLE_AFTER_SECONDS = 60
 STOP_GRACE_SECONDS = 5
+# Windows: the backend is a console program started without a console; without this flag
+# every child it starts would open a visible console window.
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 def self_command(subcommand: str, *args: str) -> list[str]:
@@ -161,6 +164,7 @@ class Supervisor:
             stdin=subprocess.DEVNULL,
             stdout=log if log is not None else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if log is not None else subprocess.DEVNULL,
+            creationflags=NO_WINDOW,
         )
         child.started_at = now
 
@@ -313,23 +317,49 @@ def run_collector_loop(args: argparse.Namespace) -> int:
         env_file = env.get("USAGE_TRACKER_ENV_FILE")
         if env_file:
             env.update(load_env_file(Path(env_file)))
-        try:
-            subprocess.run(
-                self_command("collect-once"),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                timeout=max(args.interval * 5, 120),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            print("collect-once timed out", file=sys.stderr, flush=True)
+        run_one_cycle(env, alive, timeout=max(args.interval * 5, 120))
         deadline = time.monotonic() + args.interval
         while alive() and time.monotonic() < deadline:
             time.sleep(1)
     return 0
 
 
-def run_collect_once(args: argparse.Namespace) -> int:  # noqa: ARG001
+def run_one_cycle(
+    env: dict[str, str],
+    alive: Callable[[], bool],
+    *,
+    timeout: float,
+    popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int | None:
+    """Run collect-once, but never outlive our own parent or the timeout.
+
+    A blocking subprocess.run here would leave the loop deaf to a dead supervisor for as long
+    as a cycle takes; polling keeps shutdown bounded by about a second.
+    """
+    proc = popen(
+        self_command("collect-once", "--parent-pid", str(os.getpid())),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        creationflags=NO_WINDOW,
+    )
+    deadline = clock() + timeout
+    while True:
+        code = proc.poll()
+        if code is not None:
+            return code
+        if not alive() or clock() > deadline:
+            if alive():
+                print("collect-once timed out", file=sys.stderr, flush=True)
+            proc.kill()
+            proc.wait()
+            return None
+        sleep(0.5)
+
+
+def run_collect_once(args: argparse.Namespace) -> int:
+    start_orphan_watchdog(parent_watch(args.parent_pid))
     from src import collector
 
     collector.main()
@@ -358,6 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
     loop.set_defaults(func=run_collector_loop)
 
     once = sub.add_parser("collect-once", help="one collector cycle")
+    once.add_argument("--parent-pid", type=int, default=None)
     once.set_defaults(func=run_collect_once)
     return parser
 

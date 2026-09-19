@@ -211,3 +211,69 @@ def test_pid_alive_for_self_and_nonsense():
     assert aicur_backend.pid_alive(os.getpid())
     assert not aicur_backend.pid_alive(0)
     assert not aicur_backend.pid_alive(-5)
+
+
+class Ticker:
+    def __init__(self):
+        self.now = 0.0
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_one_cycle_returns_the_exit_code():
+    procs = []
+
+    def popen(argv, **kwargs):
+        procs.append(FakeProc(argv))
+        procs[-1].exit(0)
+        return procs[-1]
+
+    t = Ticker()
+    assert aicur_backend.run_one_cycle({}, lambda: True, timeout=10, popen=popen,
+                                       clock=t.clock, sleep=t.sleep) == 0
+    argv = procs[0].argv
+    assert argv[-3:] == ["collect-once", "--parent-pid", str(os.getpid())]
+
+
+def test_one_cycle_kills_the_child_when_the_parent_dies():
+    procs = []
+    parent = {"alive": True}
+
+    def popen(argv, **kwargs):
+        procs.append(FakeProc(argv))
+        return procs[-1]
+
+    t = Ticker()
+
+    def sleep(seconds):
+        t.sleep(seconds)
+        if t.now >= 2:
+            parent["alive"] = False
+
+    result = aicur_backend.run_one_cycle({}, lambda: parent["alive"], timeout=120, popen=popen,
+                                         clock=t.clock, sleep=sleep)
+    assert result is None
+    assert procs[0].killed
+    assert t.now <= 2.5  # bounded by the poll interval, not by the 120 s timeout
+
+
+def test_one_cycle_kills_the_child_at_the_timeout():
+    procs = []
+
+    def popen(argv, **kwargs):
+        procs.append(FakeProc(argv))
+        return procs[-1]
+
+    t = Ticker()
+    assert aicur_backend.run_one_cycle({}, lambda: True, timeout=5, popen=popen,
+                                       clock=t.clock, sleep=t.sleep) is None
+    assert procs[0].killed
+
+
+def test_collect_once_accepts_parent_pid():
+    args = aicur_backend.build_parser().parse_args(["collect-once", "--parent-pid", "42"])
+    assert args.parent_pid == 42
