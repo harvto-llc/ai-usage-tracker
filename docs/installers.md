@@ -155,6 +155,9 @@ passed to the children by environment: `USAGE_TRACKER_DB=~/.usage-tracker/claude
   `gir1.2-ayatanaappindicator3-0.1`. The launcher names `/usr/bin/python3` explicitly because a
   venv or toolcache `python3` earlier on PATH has no `gi` (this would have broken the CI smoke,
   where setup-python's interpreter is first on PATH).
+- Scope differs by package: the `.deb` is a system install and its postinst enables the user
+  unit for every account on the machine (each user's backend starts at their next login);
+  the AppImage is per user and touches only `~/.config`.
 - The tray does not own the backend on Linux; on start it runs
   `systemctl --user start aicur-backend.service` if the unit is inactive. Quit quits the tray.
 - The recorded GNOME defect: stock GNOME Shell has no tray. The `.deb` description says so; at

@@ -92,8 +92,9 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl --global disable aicur-backend.service || true
 fi
 # Stop running copies (any user) so no backend outlives its files.
-pkill -f /opt/ai-cur-desktop/backend/aicur-backend || true
-pkill -f /opt/ai-cur-desktop/tray/linux_tray.py || true
+# Anchored to the start of the command line, so a shell merely mentioning the path is spared.
+pkill -f '^/opt/ai-cur-desktop/backend/aicur-backend( |$)' || true
+pkill -f '^/usr/bin/python3 -B /opt/ai-cur-desktop/tray/linux_tray\.py' || true
 EOF
 chmod 755 "$DEB/DEBIAN/postinst" "$DEB/DEBIAN/prerm"
 DEB_OUT="$OUTPUT_DIR/${PKG}_${DEB_VERSION}_amd64.deb"

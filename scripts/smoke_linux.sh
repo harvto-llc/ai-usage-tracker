@@ -118,8 +118,9 @@ until [ "${ROWS:-0}" -ge 1 ]; do
 done
 echo "collector wrote $ROWS provider_metric_samples row(s)"
 [ "$(backend_pids | wc -l)" -ge 3 ] || fail 2 "expected supervisor + api + collector, saw: $(backend_pids | tr '\n' ' ')"
-if ss -ltn | awk '{print $4}' | grep -E ":$PORT\$" | grep -vq '^127\.0\.0\.1:'; then
-  fail 2 "port $PORT is bound beyond 127.0.0.1: $(ss -ltn | grep ":$PORT")"
+# Filter by source port in ss itself (no column counting across a whole listing).
+if ss -ltnH "sport = :$PORT" | awk '{print $4}' | grep -vq '^127\.0\.0\.1:'; then
+  fail 2 "port $PORT is bound beyond 127.0.0.1: $(ss -ltn "sport = :$PORT")"
 fi
 
 # ---- stopped ----
