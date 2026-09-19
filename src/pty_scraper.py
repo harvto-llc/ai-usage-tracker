@@ -7,10 +7,11 @@
 import json
 import os
 import plistlib
+import queue
 import re
-import select
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -1622,6 +1623,10 @@ def _parse_codex_rate_limits_payload(payload: dict) -> dict | None:
     return result or None
 
 
+# Seconds scrape_codex_usage waits for each app-server response.
+CODEX_RECV_TIMEOUT = 10
+
+
 def scrape_codex_usage() -> dict | None:
     """Get Codex usage via the app-server JSON-RPC API.
 
@@ -1638,41 +1643,53 @@ def scrape_codex_usage() -> dict | None:
         text=True,
     )
 
+    # A reader thread instead of select(): on Windows select() accepts only sockets, so a
+    # select() on this pipe raised there and Codex quota was never read.
+    lines: queue.Queue = queue.Queue()
+
+    def pump():
+        for line in iter(proc.stdout.readline, ''):
+            lines.put(line)
+
+    threading.Thread(target=pump, name="codex-app-server-reader", daemon=True).start()
+
     def send(msg):
         proc.stdin.write(json.dumps(msg) + '\n')
         proc.stdin.flush()
 
-    def recv(timeout=10):
+    def recv(timeout=None):
         # Codex 0.129+ pushes unsolicited JSON-RPC notifications
         # (e.g. `remoteControl/status/changed`) between request/response pairs.
         # Filter them out — only return objects that carry an `id` (responses).
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            r, _, _ = select.select([proc.stdout], [], [], 1)
-            if r:
-                line = proc.stdout.readline()
-                if line:
-                    try:
-                        msg = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if "id" not in msg:
-                        continue
-                    return msg
-        return None
+        deadline = time.time() + (CODEX_RECV_TIMEOUT if timeout is None else timeout)
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                line = lines.get(timeout=min(1.0, remaining))
+            except queue.Empty:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict) or "id" not in msg:
+                continue
+            return msg
 
     try:
         # Initialize
         send({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
               'params': {'clientInfo': {'name': 'usage-tracker', 'version': '1.0'}}})
-        recv(timeout=10)
+        recv()
 
         # Initialized notification
         send({'jsonrpc': '2.0', 'method': 'initialized', 'params': {}})
 
         # Read rate limits
         send({'jsonrpc': '2.0', 'id': 2, 'method': 'account/rateLimits/read', 'params': {}})
-        resp = recv(timeout=10)
+        resp = recv()
     finally:
         proc.terminate()
         try:

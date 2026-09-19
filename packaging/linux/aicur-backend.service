@@ -1,0 +1,12 @@
+[Unit]
+Description=ai-cur desktop client backend (local API on 127.0.0.1 and collector)
+Documentation=https://github.com/harvto-llc/ai-usage-tracker
+
+[Service]
+# @EXEC@ is filled in at packaging time: the .deb's /opt path, or "<AppImage>" backend.
+ExecStart=@EXEC@ supervise
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

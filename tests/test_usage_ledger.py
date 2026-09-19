@@ -315,7 +315,8 @@ def test_codex_restores_use_run_model_and_dedupe_cumulative_token_events(tmp_pat
     assert sum(event["output_tokens"] for event in events) == 20
 
 
-def test_daily_model_aggregates_rebuild_for_affected_days(tmp_path):
+def test_daily_model_aggregates_rebuild_for_affected_days(tmp_path, local_timezone):
+    local_timezone("UTC")  # the fixture's timestamps and day buckets are written in UTC
     now = datetime(2026, 7, 24, 12, tzinfo=timezone.utc)
     root = tmp_path / ".claude" / "projects" / "project"
     root.mkdir(parents=True)

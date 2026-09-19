@@ -6,7 +6,11 @@ struct UsageMenuBarApp: App {
     private var appDelegate
 
     init() {
-        Sentinel.shared.start()
+        // AICUR_SMOKE=1 is the headless CI smoke test: no browser-cookie reads (they can
+        // raise Keychain prompts nobody can answer on a CI runner).
+        if ProcessInfo.processInfo.environment["AICUR_SMOKE"] != "1" {
+            Sentinel.shared.start()
+        }
     }
 
     var body: some Scene {

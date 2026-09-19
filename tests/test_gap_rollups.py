@@ -82,7 +82,8 @@ def _assistant(
     return entry
 
 
-def test_session_analytics_exposes_working_hours(tmp_path, monkeypatch):
+def test_session_analytics_exposes_working_hours(tmp_path, monkeypatch, local_timezone):
+    local_timezone("UTC")  # the fixture's timestamps and day buckets are written in UTC
     gap_rollups_module._cache.clear()
     gap_rollups_module._cache_ts.clear()
     claude_project_dir = tmp_path / ".claude/projects/-Users-amgad-dev-projects-usage-tracker"
@@ -128,7 +129,8 @@ def test_session_analytics_exposes_working_hours(tmp_path, monkeypatch):
         gap_rollups_module._cache_ts.clear()
 
 
-def test_session_analytics_daily_rows_expose_gap_fields_with_legacy_compat(tmp_path, monkeypatch):
+def test_session_analytics_daily_rows_expose_gap_fields_with_legacy_compat(tmp_path, monkeypatch, local_timezone):
+    local_timezone("UTC")  # the fixture's timestamps and day buckets are written in UTC
     gap_rollups_module._cache.clear()
     gap_rollups_module._cache_ts.clear()
     claude_project_dir = tmp_path / ".claude/projects/-Users-amgad-dev-projects-usage-tracker"

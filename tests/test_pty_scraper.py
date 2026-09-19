@@ -182,7 +182,8 @@ class TestScrapeClaudeUsageWeb:
         ):
             assert claude_web_usage_configured() is True
 
-    def test_parses_structured_usage_payload(self):
+    def test_parses_structured_usage_payload(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "currentSession": {
                 "usedPercent": 24,
@@ -273,7 +274,8 @@ class TestScrapeClaudeUsageWeb:
         assert bucket["window_kind"] == "monthly"
         assert bucket["scope_kind"] == "model"
 
-    def test_prefers_current_session_reset_over_nested_weekly_reset(self):
+    def test_prefers_current_session_reset_over_nested_weekly_reset(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "currentSession": {
                 "usedPercent": 24,
@@ -297,7 +299,8 @@ class TestScrapeClaudeUsageWeb:
         assert result["weekly_pct"] == 17
         assert result["weekly_reset"] == "Apr 16 11:00 PM"
 
-    def test_parses_live_claude_schema(self):
+    def test_parses_live_claude_schema(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "five_hour": {
                 "utilization": 24.0,
@@ -331,7 +334,8 @@ class TestScrapeClaudeUsageWeb:
         assert result["session_reset"] == "Apr 10 7:00 PM"
         assert result["weekly_reset"] == "Apr 16 11:00 PM"
 
-    def test_parses_fable_from_scoped_limits_array(self):
+    def test_parses_fable_from_scoped_limits_array(self, local_timezone):
+        local_timezone("America/Los_Angeles")  # the expected reset strings are Pacific
         payload = {
             "five_hour": {
                 "utilization": 81,
@@ -618,10 +622,9 @@ class TestScrapeCodexUsage:
                 }
             }) + "\n",
         ]
-        mock_proc.stdout.readline = MagicMock(side_effect=responses)
+        mock_proc.stdout.readline = MagicMock(side_effect=responses + [""])
 
-        import select
-        with patch("src.pty_scraper.select.select", return_value=([mock_proc.stdout], [], [])):
+        with patch("src.pty_scraper.CODEX_RECV_TIMEOUT", 2):
             result = scrape_codex_usage()
 
         assert result is not None
@@ -646,10 +649,9 @@ class TestScrapeCodexUsage:
                 }
             }) + "\n",
         ]
-        mock_proc.stdout.readline = MagicMock(side_effect=responses)
+        mock_proc.stdout.readline = MagicMock(side_effect=responses + [""])
 
-        import select
-        with patch("src.pty_scraper.select.select", return_value=([mock_proc.stdout], [], [])):
+        with patch("src.pty_scraper.CODEX_RECV_TIMEOUT", 2):
             result = scrape_codex_usage()
 
         assert result is not None
@@ -742,10 +744,9 @@ class TestScrapeCodexUsage:
                 }
             }) + "\n",
         ]
-        mock_proc.stdout.readline = MagicMock(side_effect=responses)
+        mock_proc.stdout.readline = MagicMock(side_effect=responses + [""])
 
-        import select
-        with patch("src.pty_scraper.select.select", return_value=([mock_proc.stdout], [], [])):
+        with patch("src.pty_scraper.CODEX_RECV_TIMEOUT", 2):
             result = scrape_codex_usage()
 
         assert result is not None
@@ -771,10 +772,9 @@ class TestScrapeCodexUsage:
                 }
             }) + "\n",
         ]
-        mock_proc.stdout.readline = MagicMock(side_effect=responses)
+        mock_proc.stdout.readline = MagicMock(side_effect=responses + [""])
 
-        import select
-        with patch("src.pty_scraper.select.select", return_value=([mock_proc.stdout], [], [])):
+        with patch("src.pty_scraper.CODEX_RECV_TIMEOUT", 2):
             result = scrape_codex_usage()
 
         assert result is not None
@@ -787,10 +787,35 @@ class TestScrapeCodexUsage:
         mock_popen.return_value = mock_proc
         mock_proc.stdout.readline = MagicMock(return_value="")
 
-        import select
-        with patch("src.pty_scraper.select.select", return_value=([], [], [])):
+        with patch("src.pty_scraper.CODEX_RECV_TIMEOUT", 0.2):
             result = scrape_codex_usage()
         assert result is None
+        mock_proc.terminate.assert_called_once()
+
+    @patch("src.pty_scraper.subprocess.Popen")
+    def test_never_uses_select_on_the_pipe(self, mock_popen):
+        # select() accepts only sockets on Windows; reading the app-server pipe through it
+        # raised there, so Codex quota was never read on Windows.
+        mock_proc = MagicMock()
+        mock_popen.return_value = mock_proc
+        mock_proc.stdout.readline = MagicMock(side_effect=[
+            json.dumps({"method": "remoteControl/status/changed", "params": {}}) + "\n",
+            "not json\n",
+            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"rateLimits": {
+                "primary": {"usedPercent": 30, "resetsAt": 1744300000},
+                "secondary": {"usedPercent": 20, "resetsAt": 1744400000},
+            }}}) + "\n",
+            "",
+        ])
+        import select
+
+        with patch.object(select, "select", side_effect=AssertionError("select() used")), \
+                patch("src.pty_scraper.CODEX_RECV_TIMEOUT", 2):
+            result = scrape_codex_usage()
+        assert result is not None
+        assert result["session_remaining_pct"] == 70
+        mock_proc.terminate.assert_called_once()
 
 
 class TestScrapeCodexAnalytics:

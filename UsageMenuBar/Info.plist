@@ -5,9 +5,11 @@
 	<key>CFBundleExecutable</key>
 	<string>UsageMenuBar</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.harvto.UsageMenuBar</string>
+	<string>com.harvto.aicur.desktop</string>
 	<key>CFBundleName</key>
-	<string>Usage Tracker</string>
+	<string>ai-cur desktop client</string>
+	<key>CFBundleDisplayName</key>
+	<string>ai-cur desktop client</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

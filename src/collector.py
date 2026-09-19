@@ -36,7 +36,7 @@ from src.scanners import (
     scan_cc_tokens_today,
 )
 
-API_URL = "http://localhost:8000/cc/report"
+API_URL = os.environ.get("USAGE_TRACKER_API_URL") or "http://localhost:8000/cc/report"
 ACCESS_SUBSCRIPTION = "subscription"
 ACCESS_API = "api"
 ACCESS_ALIASES = {

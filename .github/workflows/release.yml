@@ -1,0 +1,470 @@
+name: release
+
+# Builds the installers. On a v* tag the artifacts are also attached to a DRAFT release; a
+# person publishes it. Every job must pass with no secrets configured: signing steps run only
+# when their secrets exist, and no smoke test is ever skipped.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  macos:
+    # Not macos-14: SweetCookieKit 0.4.0 needs swift-tools 6.2 (Xcode 26), which does not run
+    # on macOS 14. See docs/installers.md.
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      PYTHON_VERSION: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode 26
+        run: |
+          xcode=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            echo "::error::no Xcode 26 on this runner; the Swift package needs swift-tools 6.2"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          swift --version
+
+      - name: Rosetta (for the x86_64 backend build and smoke)
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      - name: Python (arm64)
+        id: py_arm64
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: arm64
+
+      - name: Unit tests
+        run: |
+          python -m pip install -r requirements.txt pytest httpx
+          python -m pytest -q
+
+      - name: Backend arm64
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-arm64"
+          "$RUNNER_TEMP/venv-arm64/bin/pip" install -r requirements.txt pyinstaller
+          "$RUNNER_TEMP/venv-arm64/bin/python" packaging/backend/build_backend.py \
+            --dist dist/backend-arm64 --work build/arm64
+          file dist/backend-arm64/aicur-backend/aicur-backend | tee /dev/stderr | grep -q 'arm64'
+
+      - name: Python (x86_64)
+        id: py_x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+
+      - name: Backend x86_64
+        env:
+          PY_X64: ${{ steps.py_x64.outputs.python-path }}
+        run: |
+          arch -x86_64 "$PY_X64" -m venv "$RUNNER_TEMP/venv-x64"
+          arch -x86_64 "$RUNNER_TEMP/venv-x64/bin/pip" install -r requirements.txt pyinstaller
+          arch -x86_64 "$RUNNER_TEMP/venv-x64/bin/python" packaging/backend/build_backend.py \
+            --dist dist/backend-x86_64 --work build/x86_64
+          file dist/backend-x86_64/aicur-backend/aicur-backend | tee /dev/stderr | grep -q 'x86_64'
+
+      # The wrong answer first: the old zip packaging has no backend, so the same smoke test
+      # must fail on it, and fail with exit 3 ("/health never answered"), not any failure.
+      - name: Negative control - smoke must fail on the backend-less zip
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          OUTPUT_DIR="$RUNNER_TEMP/zip" scripts/package_macos_app.sh
+          set +e
+          TIMEOUT=20 scripts/smoke_macos.sh "$RUNNER_TEMP/zip/UsageTracker-$VERSION.zip"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 3 ]; then
+            echo "::error::negative control expected exit 3 (no backend health), got $rc"
+            exit 1
+          fi
+          echo "negative control failed as required (exit 3)"
+
+      - name: Signing identity (only when the secrets exist)
+        id: signing
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_CERT_PASSWORD" ]; then
+            echo "No signing secrets: building an ad hoc signed, unsigned-for-distribution dmg."
+            {
+              echo "identity=-"
+              echo "notary="
+              echo "suffix=-unsigned"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          # Prepend ours to the user search list (names from `security` are one per line).
+          existing=()
+          while IFS= read -r line; do existing+=("$(echo "$line" | tr -d '" ')"); done \
+            < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::MACOS_CERT_P12 holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "suffix=" >> "$GITHUB_OUTPUT"
+          if [ -n "$NOTARY_APPLE_ID" ] && [ -n "$NOTARY_TEAM_ID" ] && [ -n "$NOTARY_PASSWORD" ]; then
+            xcrun notarytool store-credentials aicur-notary --apple-id "$NOTARY_APPLE_ID" \
+              --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --keychain "$keychain"
+            echo "notary=aicur-notary" >> "$GITHUB_OUTPUT"
+          else
+            echo "notary=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          BACKEND_ARM64: dist/backend-arm64/aicur-backend
+          BACKEND_X86_64: dist/backend-x86_64/aicur-backend
+          SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_PROFILE: ${{ steps.signing.outputs.notary }}
+        run: scripts/make_dmg.sh
+
+      - name: Smoke test (arm64)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/smoke_macos.sh "dist/ai-cur-desktop-$VERSION.dmg"
+
+      - name: Smoke test (x86_64 under Rosetta)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: LAUNCH_ARCH=x86_64 TIMEOUT=60 scripts/smoke_macos.sh "dist/ai-cur-desktop-$VERSION.dmg"
+
+      - name: Name the artifact
+        id: artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SUFFIX: ${{ steps.signing.outputs.suffix }}
+        run: |
+          name="ai-cur-desktop-$VERSION$SUFFIX.dmg"
+          if [ "dist/ai-cur-desktop-$VERSION.dmg" != "dist/$name" ]; then
+            mv "dist/ai-cur-desktop-$VERSION.dmg" "dist/$name"
+          fi
+          # Bare file name inside, so `shasum -c` works next to the downloaded file.
+          (cd dist && shasum -a 256 "$name" | tee "$name.sha256")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            dist/${{ steps.artifact.outputs.name }}
+            dist/${{ steps.artifact.outputs.name }}.sha256
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $v = $env:GITHUB_REF.Substring(11) }
+          else { $v = "0.0.0-ci.$env:GITHUB_RUN_NUMBER" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: PowerShell syntax
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD\scripts\smoke_windows.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_ }; exit 1 }
+
+      - name: Unit tests (installer modules on Windows)
+        run: |
+          python -m pip install -r requirements.txt pytest httpx pyinstaller
+          python -m pytest -q tests/test_aicur_backend.py tests/test_aicur_config.py `
+            tests/test_tray_core.py tests/test_windows_tray.py tests/test_install_overrides.py `
+            tests/test_process_liveness.py
+
+      - name: Freeze backend and tray
+        run: |
+          python packaging/backend/build_backend.py --dist dist/win --work build/win-backend
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python packaging/backend/build_backend.py --target windows-tray --dist dist/win --work build/win-tray
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Test-Path dist/win/aicur-backend/aicur-backend.exe, dist/win/aicur-tray/aicur-tray.exe
+
+      - name: Authenticode (only when the secrets exist)
+        id: signing
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERT_PFX -or -not $env:WINDOWS_CERT_PASSWORD) {
+            Write-Host "No signing secrets: building an unsigned installer."
+            "suffix=-unsigned" >> $env:GITHUB_OUTPUT
+            "pfx=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object FullName -like '*x64*' | Select-Object -Last 1
+          if (-not $signtool) { Write-Host "::error::signtool.exe not found"; exit 1 }
+          Get-ChildItem dist/win -Recurse -Include *.exe | ForEach-Object {
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd sha256 `
+              /tr http://timestamp.digicert.com /td sha256 $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          "suffix=" >> $env:GITHUB_OUTPUT
+          "pfx=$pfx" >> $env:GITHUB_OUTPUT
+          "signtool=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Inno Setup
+        id: iscc
+        run: |
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $candidate = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $candidate)) { choco install innosetup -y --no-progress | Out-Host }
+            $iscc = Get-Item $candidate
+          }
+          "path=$($iscc.Source ?? $iscc.FullName)" >> $env:GITHUB_OUTPUT
+
+      # The wrong answer first: an installer without the backend must fail the same smoke test
+      # with exit 3 ("/health never answered"), not with any other failure.
+      - name: Negative control - smoke must fail on the backend-less installer
+        env:
+          ISCC: ${{ steps.iscc.outputs.path }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Absolute paths: ISCC resolves relative ones against the .iss file's folder.
+          & $env:ISCC /Q "/DAppVersion=$env:VERSION" "/DTrayDir=$PWD\dist\win\aicur-tray" /DNoBackend "/DOutputDir=$PWD\dist\neg" packaging\windows\aicur-desktop.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          pwsh -File scripts/smoke_windows.ps1 -Installer "dist\neg\ai-cur-desktop-setup-$env:VERSION-nobackend.exe" -Timeout 25
+          $rc = $LASTEXITCODE
+          if ($rc -ne 3) { Write-Host "::error::negative control expected exit 3 (no backend health), got $rc"; exit 1 }
+          Write-Host "negative control failed as required (exit 3)"
+          exit 0
+
+      - name: Build installer
+        env:
+          ISCC: ${{ steps.iscc.outputs.path }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          & $env:ISCC /Q "/DAppVersion=$env:VERSION" "/DTrayDir=$PWD\dist\win\aicur-tray" "/DBackendDir=$PWD\dist\win\aicur-backend" "/DOutputDir=$PWD\dist" packaging\windows\aicur-desktop.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Sign installer (only when the secrets exist)
+        if: steps.signing.outputs.pfx != ''
+        env:
+          PFX: ${{ steps.signing.outputs.pfx }}
+          SIGNTOOL: ${{ steps.signing.outputs.signtool }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          & $env:SIGNTOOL sign /f $env:PFX /p $env:WINDOWS_CERT_PASSWORD /fd sha256 `
+            /tr http://timestamp.digicert.com /td sha256 "dist\ai-cur-desktop-setup-$env:VERSION.exe"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test (install, start, health, quit, uninstall)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pwsh -File scripts/smoke_windows.ps1 -Installer "dist\ai-cur-desktop-setup-$env:VERSION.exe"
+          exit $LASTEXITCODE
+
+      - name: Name the artifact
+        id: artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SUFFIX: ${{ steps.signing.outputs.suffix }}
+        run: |
+          $name = "ai-cur-desktop-setup-$env:VERSION$env:SUFFIX.exe"
+          if ($name -ne "ai-cur-desktop-setup-$env:VERSION.exe") {
+            Move-Item "dist\ai-cur-desktop-setup-$env:VERSION.exe" "dist\$name"
+          }
+          (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower() + "  $name" | Set-Content "dist\$name.sha256"
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/${{ steps.artifact.outputs.name }}
+            dist/${{ steps.artifact.outputs.name }}.sha256
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: System packages (tray runtime, user systemd, xvfb, validators)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dbus-user-session xvfb xauth desktop-file-utils \
+            python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 fuse3
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Unit tests (installer modules on Linux)
+        run: |
+          python -m pip install -r requirements.txt pytest httpx pyinstaller
+          python -m pytest -q tests/test_aicur_backend.py tests/test_aicur_config.py tests/test_tray_core.py \
+            tests/test_linux_tray.py tests/test_install_overrides.py tests/test_process_liveness.py
+
+      - name: Freeze backend
+        run: |
+          python packaging/backend/build_backend.py --dist dist/linux --work build/linux
+          file dist/linux/aicur-backend/aicur-backend | tee /dev/stderr | grep -q 'x86-64'
+
+      # The wrong answer first: a .deb whose backend exits at once must fail the same smoke test
+      # with exit 3 ("/health never answered"), not with any other failure.
+      - name: Negative control - smoke must fail on a backend-less .deb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          stub="$RUNNER_TEMP/stub/aicur-backend"
+          mkdir -p "$stub"
+          printf '#!/bin/sh\nexit 0\n' > "$stub/aicur-backend"
+          chmod +x "$stub/aicur-backend"
+          SKIP_APPIMAGE=1 BACKEND_DIR="$stub" OUTPUT_DIR="$RUNNER_TEMP/neg" scripts/build_linux.sh
+          set +e
+          TIMEOUT=25 scripts/smoke_linux.sh deb "$RUNNER_TEMP"/neg/*.deb
+          rc=$?
+          set -e
+          if [ "$rc" -ne 3 ]; then
+            echo "::error::negative control expected exit 3 (no backend health), got $rc"
+            exit 1
+          fi
+          echo "negative control failed as required (exit 3)"
+
+      - name: Build .deb and AppImage
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: BACKEND_DIR=dist/linux/aicur-backend OUTPUT_DIR=dist scripts/build_linux.sh
+
+      - name: Smoke test (.deb)
+        run: scripts/smoke_linux.sh deb dist/*.deb
+
+      - name: Smoke test (AppImage)
+        run: scripts/smoke_linux.sh appimage dist/*.AppImage
+
+      - name: Checksums
+        run: |
+          cd dist
+          for f in *.deb *.AppImage; do sha256sum "$f" > "$f.sha256"; done
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.sha256
+          if-no-files-found: error
+
+  # One check a pull request can require: green only when EVERY build-and-smoke job succeeded.
+  # A failed, cancelled or skipped job turns it red. Its needs list must name every other job
+  # except release; tests/test_release_workflow.py derives that from this file and fails if not.
+  gate:
+    if: always()
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Every build and smoke job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if ! echo "$NEEDS" | jq -e 'length > 0 and (to_entries | all(.value.result == "success"))' >/dev/null; then
+            echo "::error::at least one build job did not succeed"
+            exit 1
+          fi
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la artifacts
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" artifacts/* --draft --title "ai-cur desktop client $TAG" \
+              --notes "Draft built by CI. Review the smoke-test logs before publishing." \
+              --repo "$GITHUB_REPOSITORY"
+          fi

@@ -1,6 +1,6 @@
 import os
-import pwd
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -22,11 +22,25 @@ from src import focus, install_identity, session_search_index, usage_ledger, wor
 # it, and `pytest_sessionstart` refuses to run at all if the resolved path is still the
 # real one. A guard that depends on remembering to apply it is the failure mode this
 # file has now hit three times.
-_REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+def _real_home() -> Path:
+    """The account's real home, read before anything below redirects HOME.
+
+    POSIX: the password database, which HOME cannot fake. Windows has no pwd module, and
+    Path.home() there reads USERPROFILE, not HOME, so that is what the sandbox must move.
+    """
+    try:
+        import pwd
+    except ImportError:
+        return Path(os.environ.get("USERPROFILE") or Path.home()).resolve()
+    return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+
+
+_REAL_HOME = _real_home()
 _SESSION_SANDBOX = Path(tempfile.mkdtemp(prefix="usage-tracker-suite-"))
 (_SESSION_SANDBOX / "home" / ".claude" / "projects").mkdir(parents=True, exist_ok=True)
 (_SESSION_SANDBOX / "home" / ".codex" / "sessions").mkdir(parents=True, exist_ok=True)
 os.environ["HOME"] = str(_SESSION_SANDBOX / "home")
+os.environ["USERPROFILE"] = str(_SESSION_SANDBOX / "home")  # Path.home() on Windows
 os.environ["USAGE_TRACKER_ACTIVITY_DB"] = str(_SESSION_SANDBOX / "activity.db")
 os.environ["USAGE_TRACKER_INSTALL_ID_FILE"] = str(_SESSION_SANDBOX / "install_id")
 os.environ["USAGE_TRACKER_FLEET_QUEUE_DB"] = str(_SESSION_SANDBOX / "fleet_queue.db")
@@ -134,8 +148,29 @@ def isolate_activity_db(tmp_path, monkeypatch):
     (sandbox_home / ".claude" / "projects").mkdir(parents=True, exist_ok=True)
     (sandbox_home / ".codex" / "sessions").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.setenv("USERPROFILE", str(sandbox_home))
     for module in (usage_ledger, work_ledger, focus, session_search_index):
         module._initialized_paths.discard(str(db_path))
     yield
     for module in (usage_ledger, work_ledger, focus, session_search_index):
         module._initialized_paths.discard(str(db_path))
+
+
+@pytest.fixture
+def local_timezone(monkeypatch):
+    """Pin the process's local time zone for one test: `local_timezone("America/Los_Angeles")`.
+
+    Tests that assert wall-clock strings (datetime.fromtimestamp, strftime) must name the zone
+    they were written in; otherwise they pass only where the machine happens to sit in it.
+    The previous zone is restored after the test.
+    """
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is unavailable on this platform; cannot pin the local time zone")
+
+    def pin(name: str) -> None:
+        monkeypatch.setenv("TZ", name)
+        time.tzset()
+
+    yield pin
+    monkeypatch.undo()
+    time.tzset()

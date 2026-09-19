@@ -9,7 +9,13 @@ final class UsageMenuBarApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        BackendController.shared.installTerminationSignalHandler()
+        BackendController.shared.start()
         statusItemController = UsageStatusItemController(viewModel: viewModel)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        BackendController.shared.stop()
     }
 }
 

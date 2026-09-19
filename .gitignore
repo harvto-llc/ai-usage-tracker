@@ -10,3 +10,4 @@ UsageMenuBar/.build/
 UsageMenuBar/*.app/
 dist/
 .DS_Store
+build/
